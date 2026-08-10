@@ -1,0 +1,21 @@
+name: java_interop_greeter
+description: >-
+  The smallest useful java_interop program, as a standalone project: boot a
+  JVM, construct a Java object, call an instance and a static method, and catch
+  a Java exception as a Dart one.
+version: 1.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  # A path dependency on the parent, which is what makes this a useful example:
+  # it consumes java_interop exactly as any other package would, through its
+  # public API, with nothing under lib/src reachable. Anything missing from the
+  # package's exports fails to compile here before it fails for anyone else.
+  java_interop:
+    path: ../../
+
+dev_dependencies:
+  lints: ^6.0.0

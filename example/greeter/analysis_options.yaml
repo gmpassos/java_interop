@@ -1,0 +1,3 @@
+# Its own project, so its own analysis options. Same lints as the parent: an
+# example that would not pass the package's own analysis is not one to copy.
+include: package:lints/recommended.yaml

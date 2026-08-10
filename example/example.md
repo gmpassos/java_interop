@@ -6,11 +6,36 @@ so `dart run` is the whole setup.
 
 | Example | What it shows | Needs the jar |
 | --- | --- | --- |
-| [`bin/greeter_example.dart`](../bin/greeter_example.dart) | The smallest useful program: boot a JVM, construct an object, call a method, catch a Java exception. Start here. | yes |
+| [`greeter/`](greeter/) | The smallest useful program: boot a JVM, construct an object, call a method, catch a Java exception. **Its own project**, depending on `java_interop` by path — what using the package from outside looks like. Start here. | yes |
 | [`jdk_apis.dart`](jdk_apis.dart) | Real work with libraries every JDK ships: SHA-256 (`MessageDigest`), locale-aware currency (`NumberFormat` + `Locale`), and a deflate/inflate round trip (`java.util.zip`) using a Java array as a shared output buffer. | no |
 | [`collections.dart`](collections.dart) | `ArrayList` and `HashMap` driven with plain Dart values, because generics erase to `Object` and boxing handles the rest. Ends with two reusable converters, `dartListFrom` and `dartMapFrom`. | no |
 | [`performance.dart`](performance.dart) | Calling Java in a loop: holding a `JavaClass` so its member-id cache pays off, and scoping local references with `localFrame`. Prints measured timings. | no |
 | [`main.dart`](main.dart) | The reference sweep — every feature once, against the test fixtures: constructors, all ten return types, fields, arrays, boxing, exceptions, references. | yes |
+
+## Layout
+
+`greeter/` is a **standalone Dart project** with its own `pubspec.yaml`,
+`analysis_options.yaml` and [`README`](greeter/README.md). It depends on
+`java_interop` by path, so it exercises the package through its public API the
+way a real consumer would — nothing under `lib/src` is reachable from it, and a
+gap in the package's exports fails there before it fails for anyone else.
+
+The other four are plain files belonging to the parent package, which keeps them
+one `dart run` away with no separate `pub get`.
+
+```
+example/
+  example.md              this file
+  main.dart               ┐
+  jdk_apis.dart           │ parent package
+  collections.dart        │
+  performance.dart        ┘
+  greeter/                standalone project
+    pubspec.yaml            java_interop: {path: ../../}
+    analysis_options.yaml
+    README.md
+    bin/greeter_example.dart
+```
 
 ## Running them
 
@@ -27,7 +52,16 @@ The two that use the `com.nfeflash.example` fixtures need the jar built first:
 ```sh
 ./build.sh                      # compiles java/ into build/java_interop.jar
 dart run example/main.dart
+
 ./run.sh                        # builds if needed, then the greeter
+```
+
+The greeter can also be run as the separate project it is:
+
+```sh
+cd example/greeter
+dart pub get
+dart run bin/greeter_example.dart
 ```
 
 If no JDK can be found, every example says so and exits rather than failing
@@ -40,6 +74,7 @@ export JAVA_HOME="$(brew --prefix openjdk@21)/libexec/openjdk.jdk/Contents/Home"
 
 ## What to read for a given task
 
+- **Getting anything at all to run** — `greeter/`.
 - **Calling a method whose descriptor you already know** — `main.dart`, the
   `_fixtures` section.
 - **Passing or receiving an array** — `jdk_apis.dart` (`MessageDigest.digest`

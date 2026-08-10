@@ -1,7 +1,10 @@
 package com.nfeflash.example;
 
 /**
- * The example class used by {@code bin/greeter_example.dart} and the README.
+ * The example class used by {@code example/greeter/} and the README.
+ *
+ * <p>Lives in this project rather than alongside that example because the test
+ * suite calls it too.
  *
  * <p>Covers the three shapes that matter for real interop: a constructor taking
  * an object, an instance method returning an object, and a static method

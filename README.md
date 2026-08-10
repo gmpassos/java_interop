@@ -459,7 +459,7 @@ trip. Dart strings are already UTF-16, so this binding uses `NewString` /
 
 ```sh
 ./build.sh                      # compile the Java fixtures into build/java_interop.jar
-./run.sh                        # the small greeter example
+./run.sh                        # the small greeter example (example/greeter/)
 dart run example/main.dart      # a tour of the whole feature set
 ./test.sh                       # the full suite (builds the jar first)
 dart test test/unit             # unit tests only — no JVM needed
@@ -475,7 +475,9 @@ dart run example/performance.dart   # member-id caching and local frames
 ```
 
 [`example/example.md`](example/example.md) indexes all five and says which to
-read for a given task.
+read for a given task. The greeter is
+[its own project](example/greeter/) with a path dependency on this one, so it
+exercises the package through its public API exactly as a consumer would.
 
 The suite skips itself with an explanation when no JDK is installed, rather than
 failing with a native error from inside `DynamicLibrary.open`.

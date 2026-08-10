@@ -20,6 +20,11 @@ jobs:
         run: dart pub get
       - name: Upgrade dependencies
         run: dart pub upgrade
+      - name: Install dependencies (example/greeter)
+        # Its own project, so `dart analyze .` below cannot resolve its imports
+        # until it has been resolved itself.
+        run: dart pub get
+        working-directory: example/greeter
       - name: dart format
         run: dart format -o none --set-exit-if-changed .
       - name: dart analyze
@@ -64,13 +69,14 @@ jobs:
       - name: Run the examples
         # Every example, so none of them can rot unnoticed. The three JDK-only
         # ones need no class path; main.dart and the greeter need the jar built
-        # in the step above.
+        # in the step above. ./run.sh resolves and runs example/greeter, which
+        # is its own project.
         run: |
           dart run example/jdk_apis.dart
           dart run example/collections.dart
           dart run example/performance.dart
           dart run example/main.dart
-          dart run bin/greeter_example.dart
+          ./run.sh
       - name: Generate coverage report
         # --base-directory makes the lcov paths repo-relative, so Codecov lines
         # them up with the source without needing a path fix.
