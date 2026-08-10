@@ -2,8 +2,15 @@
 
 ## 1.1.1
 
-Repository, examples and CI. **No library changes** — the only edit under `lib/`
-is a corrected doc comment, so upgrading from 1.1.0 changes nothing at runtime.
+First release on pub.dev. Repository, examples and CI — **no library changes**:
+the only edit under `lib/` is a corrected doc comment, so upgrading from 1.1.0
+changes nothing at runtime.
+
+### Compatibility
+
+- The SDK floor drops from `^3.12.2` to `^3.10.0`. Nothing in the package needed
+  3.12, and CI now runs `dart analyze` and the full suite on a pinned 3.10.0 SDK
+  as well as on stable, so the floor is exercised rather than asserted.
 
 ### Examples
 
