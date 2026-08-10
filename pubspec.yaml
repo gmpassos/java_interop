@@ -4,7 +4,7 @@ description: >-
   JVM in-process, loads jars, and calls constructors, methods, fields and arrays
   with full primitive coverage and Java-to-Dart exception translation.
   Deliberately avoids package:jni, which requires the Flutter SDK.
-version: 1.0.0
+version: 1.1.0
 publish_to: none
 
 environment:

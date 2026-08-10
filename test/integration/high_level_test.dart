@@ -13,30 +13,15 @@ void main() {
 
   group('JavaObject basics', () {
     test('javaToString delegates to Java toString()', () {
-      final integerClass = JavaClass.forName(jvm, 'java.lang.Integer');
-      addTearDown(integerClass.release);
-
-      final value =
-          integerClass.callStatic('valueOf', '(I)Ljava/lang/Integer;', [42])
-              as JavaObject;
-      addTearDown(value.release);
+      final value = JavaObject(jvm, autoRelease(jvm.boxInt(42)));
 
       expect(value.javaToString(), '42');
     });
 
     test('javaEquals uses equals(), not reference identity', () {
-      final integerClass = JavaClass.forName(jvm, 'java.lang.Integer');
-      addTearDown(integerClass.release);
-
       // 1000 is outside the Integer cache, so these are distinct objects.
-      final a =
-          integerClass.callStatic('valueOf', '(I)Ljava/lang/Integer;', [1000])
-              as JavaObject;
-      final b =
-          integerClass.callStatic('valueOf', '(I)Ljava/lang/Integer;', [1000])
-              as JavaObject;
-      addTearDown(a.release);
-      addTearDown(b.release);
+      final a = JavaObject(jvm, autoRelease(jvm.boxInt(1000)));
+      final b = JavaObject(jvm, autoRelease(jvm.boxInt(1000)));
 
       expect(a.javaEquals(b), isTrue, reason: 'equal by value');
       expect(

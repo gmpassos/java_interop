@@ -68,8 +68,19 @@ does not expose).
   that returns `long` is undefined behaviour in raw JNI, not an error.
 - **Correct strings.** The UTF-16 (`jchar`) family, so emoji, CJK and embedded
   NULs survive a round trip. JNI's "UTF-8" is *modified* UTF-8 and does not.
-- **Arrays.** Creation, length, and bulk region read/write for all eight
-  primitive types, plus object arrays including null elements.
+- **Arrays.** A `JavaArray` that carries its element type: a Dart `List` passes
+  as an array argument, an array result reads back as a typed list (`Int32List`,
+  `List<String?>`, nested `JavaArray`s), and elements are indexable. Underneath,
+  creation, length, and bulk region read/write for all eight primitive types,
+  plus object arrays including null elements.
+- **Boxing.** A Dart number, `bool` or `String` passed where a wrapper or an
+  erased `Object` is declared is boxed into `Integer`/`Long`/`Double`/… and
+  released afterwards; a declared wrapper result is unboxed back to an `int`,
+  `double` or `bool`. `toDart()` does the same for a value whose declared type
+  was only `Object` — which, after erasure, is every generic API.
+- **Member ids are cached.** `JavaClass` caches each `jmethodID`/`jfieldID` it
+  resolves, and a `JavaObject` holds the runtime class it looked up, so a call
+  in a loop pays for `GetMethodID` once instead of once per invocation.
 - **Explicit reference ownership.** Local and global references, `toGlobal`,
   `isSameObject`, scoped `localFrame`, and a clear Dart error on use-after-
   release instead of handing the VM a dangling pointer.
@@ -78,16 +89,16 @@ does not expose).
   is not poisoned; `throwJava` raises one from Dart.
 - **An escape hatch.** `Jvm.fnSlot(index)` reaches any JNI function this binding
   does not wrap.
-- **Tested.** 242 tests across unit and integration suites, covering every
-  primitive type, both directions of every conversion, the reference lifecycle,
-  the exception paths, and the multi-isolate startup race.
+- **Tested.** 310 tests across unit and integration suites, covering every
+  primitive type, both directions of every conversion, arrays and boxing, the
+  reference lifecycle, the exception paths, and the multi-isolate startup race.
 
 ## Architecture
 
 ```
         Your Dart code
               │
-     JavaClass / JavaObject      ← signature-driven, converts + releases
+  JavaClass / JavaObject / JavaArray   ← signature-driven, converts + releases
               │
    extensions on Jvm (JvmCalls, JvmFields, JvmArrays, JvmStrings, JvmClasses)
               │                    ← 1:1 with the JNI C API
@@ -194,12 +205,16 @@ result, so `(I)I` returns a Dart `int` and `(D)D` a Dart `double`.
 | `float` `double` | `double` (or `int`) | `double` |
 | `void` | — | `null` |
 | `java.lang.String` | `String` or `null` | `String?` |
+| `Integer` `Long` `Double` … | `int` / `double` / `bool` | `int?` / `double?` / `bool?` |
+| `Object` `Number` `Comparable` | `int` / `double` / `bool` (boxed, see below) | `JavaObject` |
+| any array | `List`, `JavaArray`, or `null` | `JavaArray` |
 | any other reference | `JavaObject`, `JavaRef`, or `null` | `JavaObject` |
 
-A Dart `String` argument is converted to a `java.lang.String` and released
-afterwards, even if the call throws. A `String` *return* is converted and its
-reference released for you. Every other reference result is a `JavaObject` you
-own and must `release()`.
+The rule is that a *declared* type Dart has a direct equivalent for is converted
+in both directions, and everything else is a `JavaObject` you own and must
+`release()`. Conversions that allocate in the VM — a `jstring` for a `String`, a
+box for a number, an array for a `List` — are released for you afterwards, even
+if the call throws.
 
 Use `callAs<T>` / `callStaticAs<T>` when you want the cast done for you:
 
@@ -219,25 +234,81 @@ fixtures.setStaticField('staticStringField', JniType.string, 'x');
 
 ### Arrays
 
+An array result is a `JavaArray` that carries its element descriptor, so one
+type covers all nine element kinds:
+
 ```dart
-// Read one Java produced.
-final fromJava = fixtures.callStatic('intArray', '()[I') as JavaObject;
-jvm.getIntArray(fromJava.ref);           // [-2147483648, 0, 2147483647]
+final fromJava = fixtures.callStatic('intArray', '()[I') as JavaArray;
+fromJava.toList();   // Int32List [-2147483648, 0, 2147483647]
+fromJava[0];         // -2147483648
 fromJava.release();
 
-// Build one in Dart and pass it back.
-final ints = jvm.newIntArray(4);
-jvm.setIntArray(ints, [1, 2, 3, 4]);
-fixtures.callStatic('sumInts', '([I)I', [ints]);  // 10
-ints.release();
-
-// Object arrays.
-final strings = jvm.newObjectArray(3, stringClass);
-jvm.setObjectArrayElement(strings, 0, jvm.newString('a'));
+// A String[] reads back as Dart strings, nulls preserved; an Integer[] unboxes.
+(fixtures.callStatic('stringArray', '()[Ljava/lang/String;') as JavaArray)
+    .toList();       // ['one', null, 'três']
 ```
 
-Reads accept a `start`/`length` window, and an out-of-range one is rejected in
-Dart with the array's real length in the message rather than reaching the VM.
+A Dart `List` passed for an array parameter is converted and released for you:
+
+```dart
+fixtures.callStatic('sumInts', '([I)I', [[1, 2, 3, 4]]);              // 10
+fixtures.callStatic('sumNested', '([[I)I', [[[1, 2], [3]]]);          // 6
+fixtures.callStatic('joinStrings', sig, [['a', 'b', 'c']]);           // a,b,c
+```
+
+Or build one to keep across calls, and mutate it in place:
+
+```dart
+final ints = JavaArray.ofInts(jvm, [10, 20, 30]);
+ints[0] = 100;
+fixtures.callStatic('sumInts', '([I)I', [ints]);  // 150
+ints.release();
+
+JavaArray.sized(jvm, JniType.string, 3);          // String[3], null-filled
+```
+
+`toList` accepts a `start`/`length` window, and an out-of-range one is rejected
+in Dart with the array's real length in the message rather than reaching the VM.
+The `JvmArrays` extension underneath is unchanged if you want the raw
+`newIntArray` / `getIntArray` / region calls.
+
+### Boxed primitives
+
+Java's autoboxing is a compiler feature, so JNI never does it. This binding
+does, driven by the declared descriptor:
+
+```dart
+// A declared wrapper is exact in both directions.
+fixtures.callStatic('unboxInteger', '(Ljava/lang/Integer;)I', [42]);  // 42
+fixtures.callStatic('boxInteger', '(I)Ljava/lang/Integer;', [7]);     // 7 (an int)
+
+// Which makes generic APIs — everything erased to Object — usable directly.
+list.call('add', '(Ljava/lang/Object;)Z', [1]);
+map.call('put', '(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;',
+    ['answer', 42]);
+```
+
+For an **erased** parameter (`Object`, `Number`, `Comparable`, `Serializable`)
+the wrapper has to be inferred, which is the one place this binding guesses what
+javac would have known statically: `bool` → `Boolean`, `double` → `Double`, and
+`int` → `Integer` when it fits in 32 bits, otherwise `Long`. That split matters
+for `equals`, so pass an explicit box when the Java side stores a specific width:
+
+```dart
+final long = jvm.boxLong(42);   // ... boxInt, boxDouble, boxChar, boxAs(...)
+fixtures.callStatic('classOf', classOfSig, [long]);  // java.lang.Long
+long.release();
+```
+
+Going the other way, a method *declared* to return `Object` still gives a
+`JavaObject` — only the VM knows what is inside it. `toDart()` asks:
+
+```dart
+final value = map.call('get', '(Ljava/lang/Object;)Ljava/lang/Object;', ['answer'])
+    as JavaObject;
+value.toDart();  // 42 — an int, a double, a bool, a String, or the object itself
+value.release();
+```
 
 ### Exceptions
 
@@ -364,7 +435,14 @@ trip. Dart strings are already UTF-16, so this binding uses `NewString` /
   family may hand back a direct pointer into the Java heap and pin it, which is
   easy to leak and blocks the GC while held.
 - **No reflection helpers, no weak references, no `RegisterNatives`.** Calling
-  Dart *from* Java is out of scope.
+  Dart *from* Java is out of scope. Overloads are not resolved from argument
+  types either — every call names its descriptor.
+- **Boxing into an erased `Object` is inferred, not known.** A Dart `int` picks
+  `Integer` or `Long` by width, which is not always what javac would have
+  chosen; box explicitly when the difference is observable.
+- **The member-id cache lives on a `JavaClass`.** Two `JavaClass.forName` calls
+  for the same class do not share one, and an object that resolved its own
+  runtime class holds it until released.
 - **No custom class loaders.** Classes come from the class path the VM was
   created with.
 - **`JavaObject` does not auto-release.** Ownership is explicit; use

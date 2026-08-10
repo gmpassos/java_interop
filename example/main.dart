@@ -24,6 +24,7 @@ void main(List<String> arguments) {
   _callTheJdk(jvm);
   _fixtures(jvm);
   _arrays(jvm);
+  _boxing(jvm);
   _exceptions(jvm);
   _references(jvm);
 }
@@ -82,32 +83,85 @@ void _arrays(Jvm jvm) {
 
   final fixtures = JavaClass.forName(jvm, 'com.nfeflash.example.Fixtures');
 
-  // Read an array Java created.
-  final fromJava = fixtures.callStatic('intArray', '()[I') as JavaObject;
-  print('int[] from Java = ${jvm.getIntArray(fromJava.ref)}');
+  // An array result knows its element type and reads back as a typed list.
+  final fromJava = fixtures.callStatic('intArray', '()[I') as JavaArray;
+  print('int[] from Java = ${fromJava.toList()}');
   fromJava.release();
 
-  // Build one in Dart and hand it back.
-  final ints = jvm.newIntArray(4);
-  jvm.setIntArray(ints, [1, 2, 3, 4]);
+  // A Dart List is converted for you, and the temporary array released.
   print(
-    'sumInts([1,2,3,4]) = ${fixtures.callStatic('sumInts', '([I)I', [ints])}',
+    'sumInts([1,2,3,4]) = ${fixtures.callStatic('sumInts', '([I)I', [
+      [1, 2, 3, 4],
+    ])}',
+  );
+  print(
+    'joinStrings       = ${fixtures.callStatic('joinStrings', '([Ljava/lang/String;)Ljava/lang/String;', [
+      ['a', 'b', 'c'],
+    ])}',
+  );
+
+  // Or build one explicitly, to keep it across several calls.
+  final ints = JavaArray.ofInts(jvm, [10, 20, 30]);
+  ints[0] = 100;
+  print('JavaArray         = ${ints.toList()} (length ${ints.length})');
+  print(
+    'sumInts(that)     = ${fixtures.callStatic('sumInts', '([I)I', [ints])}',
   );
   ints.release();
 
-  // Object arrays.
-  final stringClass = jvm.findClass('java.lang.String');
-  final strings = jvm.newObjectArray(3, stringClass);
-  for (final (index, value) in ['a', 'b', 'c'].indexed) {
-    final element = jvm.newString(value);
-    jvm.setObjectArrayElement(strings, index, element);
-    element.release();
+  // A String[] comes back as Dart strings, null elements included.
+  final strings =
+      fixtures.callStatic('stringArray', '()[Ljava/lang/String;') as JavaArray;
+  print('String[]          = ${strings.toList()}');
+  strings.release();
+
+  fixtures.release();
+}
+
+void _boxing(Jvm jvm) {
+  print('\n--- boxed primitives ---');
+
+  final fixtures = JavaClass.forName(jvm, 'com.nfeflash.example.Fixtures');
+
+  // A declared wrapper is boxed on the way in and unboxed on the way out.
+  print(
+    'unboxInteger(42)  = '
+    '${fixtures.callStatic('unboxInteger', '(Ljava/lang/Integer;)I', [42])}',
+  );
+  print(
+    'boxInteger(7)     = '
+    '${fixtures.callStatic('boxInteger', '(I)Ljava/lang/Integer;', [7])}',
+  );
+
+  // For an erased `Object` parameter the wrapper is inferred from the value.
+  const classOf = '(Ljava/lang/Object;)Ljava/lang/String;';
+  print('classOf(42)       = ${fixtures.callStatic('classOf', classOf, [42])}');
+  print(
+    'classOf(2^40)     = '
+    '${fixtures.callStatic('classOf', classOf, [1 << 40])}',
+  );
+  print(
+    'classOf(1.5)      = ${fixtures.callStatic('classOf', classOf, [1.5])}',
+  );
+
+  // Which means a generic collection can be driven with plain Dart values.
+  final listClass = JavaClass.forName(jvm, 'java.util.ArrayList');
+  final list = listClass.newInstance();
+  for (final value in [1, 2, 3]) {
+    list.call('add', '(Ljava/lang/Object;)Z', [value]);
   }
   print(
-    'joinStrings     = ${fixtures.callStatic('joinStrings', '([Ljava/lang/String;)Ljava/lang/String;', [strings])}',
+    'sumList([1,2,3])  = '
+    '${fixtures.callStatic('sumList', '(Ljava/util/List;)I', [list])}',
   );
-  strings.release();
-  stringClass.release();
+
+  // And what a method declared to return `Object` actually handed back.
+  final first = list.call('get', '(I)Ljava/lang/Object;', [0]) as JavaObject;
+  print('list.get(0)       = ${first.toDart()}');
+  first.release();
+
+  list.release();
+  listClass.release();
   fixtures.release();
 }
 

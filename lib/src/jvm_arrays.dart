@@ -5,6 +5,11 @@
 /// it may hand back a *direct pointer* into the Java heap and pin it, which is
 /// easy to leak and blocks the GC for as long as it is held. Region copies are
 /// simpler to reason about and fast enough for anything crossing this boundary.
+///
+/// The `…ArrayRegion` calls at the bottom are the JNI surface; on top of them
+/// sit descriptor-driven helpers ([JvmArrays.newArray], [JvmArrays.arrayToList],
+/// [JvmArrays.getArrayElement], [JvmArrays.setArrayElement]) that take the
+/// element type as a string, which is what `JavaArray` is built from.
 library;
 
 import 'dart:ffi';
@@ -12,10 +17,13 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
+import 'boxing.dart';
 import 'errors.dart';
 import 'java_ref.dart';
 import 'jni_slots.dart';
 import 'jvm.dart';
+import 'jvm_classes.dart';
+import 'jvm_strings.dart';
 import 'native_types.dart';
 import 'signatures.dart';
 
@@ -349,7 +357,321 @@ extension JvmArrays on Jvm {
     });
   }
 
+  // --- Descriptor-driven access --------------------------------------------
+
+  /// The `jclass` for an array's element type.
+  ///
+  /// `Ljava/lang/String;` resolves `java.lang.String`; a nested array
+  /// descriptor such as `[I` is handed to `FindClass` as-is, which is exactly
+  /// how JNI names array classes.
+  ///
+  /// The returned reference is local; release it.
+  JavaRef elementClass(String elementDescriptor) {
+    if (elementDescriptor.startsWith('[')) return findClass(elementDescriptor);
+    if (elementDescriptor.startsWith('L') && elementDescriptor.endsWith(';')) {
+      return findClass(
+        elementDescriptor.substring(1, elementDescriptor.length - 1),
+      );
+    }
+    throw JniError('not a reference element descriptor: "$elementDescriptor"');
+  }
+
+  /// Creates a Java array of [elementDescriptor] elements holding [values].
+  ///
+  /// Elements are converted the way arguments are: a Dart `String` becomes a
+  /// `java.lang.String`, a `bool`/`int`/`double` is boxed when the element type
+  /// can hold a box, and a [JavaRef] is stored as-is. Every temporary this
+  /// creates is released before returning — the array itself holds the
+  /// references that matter.
+  ///
+  /// The returned reference is local; release it.
+  JavaRef newArray(String elementDescriptor, List<Object?> values) {
+    if (JniType.isPrimitive(elementDescriptor)) {
+      final array = newPrimitiveArray(elementDescriptor, values.length);
+      if (values.isEmpty) return array;
+      try {
+        _fillPrimitiveArray(array, elementDescriptor, values);
+      } on Object {
+        array.release();
+        rethrow;
+      }
+      return array;
+    }
+
+    final component = elementClass(elementDescriptor);
+    try {
+      final array = newObjectArray(values.length, component);
+      try {
+        for (var i = 0; i < values.length; i++) {
+          // Slots start out null, so a null element needs no work.
+          if (values[i] == null) continue;
+          setArrayElement(array, elementDescriptor, i, values[i]);
+        }
+      } on Object {
+        array.release();
+        rethrow;
+      }
+      return array;
+    } finally {
+      component.release();
+    }
+  }
+
+  /// Reads a whole array into Dart, choosing the natural list type for
+  /// [elementDescriptor].
+  ///
+  /// Primitive arrays come back as the matching typed list ([Int32List],
+  /// [Float64List], …), a `String[]` as `List<String?>`, and any other object
+  /// array as `List<JavaRef>` of fresh local references **the caller must
+  /// release**.
+  List<Object?> arrayToList(
+    JavaRef array,
+    String elementDescriptor, {
+    int start = 0,
+    int? length,
+  }) {
+    switch (elementDescriptor) {
+      case JniType.boolean:
+        return getBooleanArray(array, start: start, length: length);
+      case JniType.byte:
+        return getByteArray(array, start: start, length: length);
+      case JniType.char:
+        return getCharArray(array, start: start, length: length);
+      case JniType.short:
+        return getShortArray(array, start: start, length: length);
+      case JniType.int_:
+        return getIntArray(array, start: start, length: length);
+      case JniType.long:
+        return getLongArray(array, start: start, length: length);
+      case JniType.float:
+        return getFloatArray(array, start: start, length: length);
+      case JniType.double_:
+        return getDoubleArray(array, start: start, length: length);
+      case JniType.string:
+        return getStringArray(array, start: start, length: length);
+      default:
+        if (!JniType.isReference(elementDescriptor)) {
+          throw JniError('unknown element descriptor "$elementDescriptor"');
+        }
+        return getObjectArray(array, start: start, length: length);
+    }
+  }
+
+  /// A `String[]` as Dart strings, preserving `null` elements.
+  List<String?> getStringArray(JavaRef array, {int start = 0, int? length}) {
+    final count = _regionLength(array, start, length);
+    return [
+      for (var i = 0; i < count; i++)
+        _takeString(getObjectArrayElement(array, start + i)),
+    ];
+  }
+
+  /// An object array's elements as fresh local references.
+  ///
+  /// Every element is a reference the caller owns and must [JavaRef.release].
+  List<JavaRef> getObjectArray(JavaRef array, {int start = 0, int? length}) {
+    final count = _regionLength(array, start, length);
+    return [
+      for (var i = 0; i < count; i++) getObjectArrayElement(array, start + i),
+    ];
+  }
+
+  /// Reads one element, as the natural Dart type for [elementDescriptor].
+  ///
+  /// A reference element other than `java.lang.String` comes back as a
+  /// [JavaRef] the caller must release.
+  Object? getArrayElement(JavaRef array, String elementDescriptor, int index) {
+    if (JniType.isPrimitive(elementDescriptor)) {
+      return arrayToList(
+        array,
+        elementDescriptor,
+        start: index,
+        length: 1,
+      ).first;
+    }
+    if (!JniType.isReference(elementDescriptor)) {
+      throw JniError('unknown element descriptor "$elementDescriptor"');
+    }
+
+    final element = getObjectArrayElement(array, index);
+    if (elementDescriptor == JniType.string) return _takeString(element);
+    return element;
+  }
+
+  /// Writes one element, converting [value] for [elementDescriptor].
+  ///
+  /// Accepts the same shapes as [newArray]; any temporary it allocates is
+  /// released before returning.
+  void setArrayElement(
+    JavaRef array,
+    String elementDescriptor,
+    int index,
+    Object? value,
+  ) {
+    if (JniType.isPrimitive(elementDescriptor)) {
+      if (value == null) {
+        throw JniError('cannot store null in a "$elementDescriptor" array');
+      }
+      _fillPrimitiveArray(array, elementDescriptor, [value], start: index);
+      return;
+    }
+    if (!JniType.isReference(elementDescriptor)) {
+      throw JniError('unknown element descriptor "$elementDescriptor"');
+    }
+
+    if (value == null) {
+      setObjectArrayElement(array, index, null);
+      return;
+    }
+    if (value is JavaRef) {
+      setObjectArrayElement(array, index, value);
+      return;
+    }
+
+    // Needs a temporary: a jstring, a nested array or a box, which the array
+    // takes its own reference to as soon as it is stored.
+    final JavaRef temporary;
+    if (value is String) {
+      if (elementDescriptor.startsWith('[')) {
+        throw JniError('cannot store a String in a "$elementDescriptor" array');
+      }
+      temporary = newString(value);
+    } else if (value is List) {
+      if (!elementDescriptor.startsWith('[')) {
+        throw JniError(
+          'cannot store a List in a "$elementDescriptor" array; '
+          'the element type is not itself an array',
+        );
+      }
+      temporary = newArray(elementDescriptor.substring(1), value);
+    } else if (value is bool || value is int || value is double) {
+      temporary = box(elementDescriptor, value);
+    } else {
+      throw JniError(
+        'cannot store ${value.runtimeType} in a "$elementDescriptor" array; '
+        'use a String, List, JavaRef, bool, int, double or null',
+      );
+    }
+
+    try {
+      setObjectArrayElement(array, index, temporary);
+    } finally {
+      temporary.release();
+    }
+  }
+
   // --- Internals -----------------------------------------------------------
+
+  /// Reads [string] into Dart and releases it, for the bulk String paths.
+  String? _takeString(JavaRef string) {
+    try {
+      return stringFrom(string);
+    } finally {
+      string.release();
+    }
+  }
+
+  void _fillPrimitiveArray(
+    JavaRef array,
+    String elementDescriptor,
+    List<Object?> values, {
+    int start = 0,
+  }) {
+    switch (elementDescriptor) {
+      case JniType.boolean:
+        setBooleanArray(
+          array,
+          _expectAll<bool>(elementDescriptor, values),
+          start: start,
+        );
+        return;
+      case JniType.byte:
+        setByteArray(
+          array,
+          _expectAll<int>(elementDescriptor, values),
+          start: start,
+        );
+        return;
+      case JniType.char:
+        setCharArray(
+          array,
+          _expectAll<int>(elementDescriptor, values),
+          start: start,
+        );
+        return;
+      case JniType.short:
+        setShortArray(
+          array,
+          _expectAll<int>(elementDescriptor, values),
+          start: start,
+        );
+        return;
+      case JniType.int_:
+        setIntArray(
+          array,
+          _expectAll<int>(elementDescriptor, values),
+          start: start,
+        );
+        return;
+      case JniType.long:
+        setLongArray(
+          array,
+          _expectAll<int>(elementDescriptor, values),
+          start: start,
+        );
+        return;
+      case JniType.float:
+        setFloatArray(
+          array,
+          _expectDoubles(elementDescriptor, values),
+          start: start,
+        );
+        return;
+      case JniType.double_:
+        setDoubleArray(
+          array,
+          _expectDoubles(elementDescriptor, values),
+          start: start,
+        );
+        return;
+      default:
+        throw JniError(
+          'not a primitive array element type: "$elementDescriptor"',
+        );
+    }
+  }
+
+  static List<T> _expectAll<T>(String descriptor, List<Object?> values) {
+    final result = <T>[];
+    for (var i = 0; i < values.length; i++) {
+      final value = values[i];
+      if (value is! T) {
+        throw JniError(
+          'element $i of a "$descriptor" array: expected $T, '
+          'got ${value.runtimeType}',
+        );
+      }
+      result.add(value);
+    }
+    return result;
+  }
+
+  /// Like [_expectAll], but widening an `int` to a `double` the way `F` and `D`
+  /// parameters do elsewhere.
+  static List<double> _expectDoubles(String descriptor, List<Object?> values) {
+    final result = <double>[];
+    for (var i = 0; i < values.length; i++) {
+      final value = values[i];
+      if (value is! num) {
+        throw JniError(
+          'element $i of a "$descriptor" array: expected a double, '
+          'got ${value.runtimeType}',
+        );
+      }
+      result.add(value.toDouble());
+    }
+    return result;
+  }
 
   int _regionLength(JavaRef array, int start, int? length) {
     if (start < 0) throw JniError('negative array start: $start');

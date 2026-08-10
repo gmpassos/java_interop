@@ -27,6 +27,8 @@ public class Fixtures {
     public double doubleField = 2.718281828459045;
     public String stringField = "initial";
     public Object objectField = null;
+    public int[] intArrayField = {1, 2, 3};
+    public Integer boxedIntField = 7;
 
     // --- Static fields, one per JNI type -----------------------------------
 
@@ -255,6 +257,81 @@ public class Fixtures {
     public static double sumDoubles(double[] values) {
         double total = 0;
         for (double value : values) {
+            total += value;
+        }
+        return total;
+    }
+
+    /** An {@code Integer[]}, with a null element: a boxed array is not a primitive one. */
+    public static Integer[] integerArray() {
+        return new Integer[] {1, null, 3};
+    }
+
+    /** A {@code int[][]}, so the element descriptor is itself an array. */
+    public static int[][] nestedIntArray() {
+        return new int[][] {{1, 2}, {3}};
+    }
+
+    public static int sumNested(int[][] values) {
+        int total = 0;
+        for (int[] row : values) {
+            for (int value : row) {
+                total += value;
+            }
+        }
+        return total;
+    }
+
+    /** An instance method taking an array, so both call paths are covered. */
+    public int sumWithNumber(int[] values) {
+        int total = number;
+        for (int value : values) {
+            total += value;
+        }
+        return total;
+    }
+
+    // --- Boxed primitives --------------------------------------------------
+
+    /** Declares a wrapper, so an argument has to be boxed exactly. */
+    public static int unboxInteger(Integer value) {
+        return value == null ? -1 : value.intValue();
+    }
+
+    /** Returns a declared wrapper, so the result has to be unboxed. */
+    public static Integer boxInteger(int value) {
+        return Integer.valueOf(value);
+    }
+
+    /** Returns a null wrapper, to check that unboxing preserves null. */
+    public static Integer nullInteger() {
+        return null;
+    }
+
+    public static Long boxLong(long value) {
+        return Long.valueOf(value);
+    }
+
+    public static Double boxDouble(double value) {
+        return Double.valueOf(value);
+    }
+
+    public static Boolean boxBoolean(boolean value) {
+        return Boolean.valueOf(value);
+    }
+
+    /**
+     * The runtime class of an erased argument, which is how the inference rule
+     * for {@code Object} parameters is observed from Dart.
+     */
+    public static String classOf(Object value) {
+        return value == null ? "null" : value.getClass().getName();
+    }
+
+    /** Sums an erased list, the shape every generic API actually has. */
+    public static int sumList(java.util.List<Integer> values) {
+        int total = 0;
+        for (Integer value : values) {
             total += value;
         }
         return total;

@@ -18,8 +18,11 @@
 /// greeter.release();
 /// ```
 ///
-/// There are two layers. [JavaClass] / [JavaObject] read the signature string
-/// and dispatch, convert Dart arguments, and release temporaries — use these.
+/// There are two layers. [JavaClass] / [JavaObject] / [JavaArray] read the
+/// signature string and dispatch, convert Dart arguments — a `String` to a
+/// `jstring`, a `List` to a Java array, a number to its wrapper — and release
+/// the temporaries that makes; they also cache the member ids they resolve.
+/// Use these.
 /// Underneath, extensions on [Jvm] ([JvmClasses], [JvmCalls], [JvmFields],
 /// [JvmArrays], [JvmStrings]) mirror the JNI C API one-to-one for the cases the
 /// high-level layer does not cover, and [Jvm.fnSlot] is the escape hatch for
@@ -32,7 +35,9 @@
 /// > shared process.
 library;
 
+export 'src/boxing.dart' show JavaWrapper, JvmBoxing;
 export 'src/errors.dart';
+export 'src/java_array.dart' show JavaArray;
 export 'src/java_class.dart' show JavaClass, JavaObject;
 export 'src/java_home.dart'
     show defaultLibjvmPath, searchLibjvm, libjvmUnder, LibjvmSearch;
