@@ -3,6 +3,10 @@
 [![Null Safety](https://img.shields.io/badge/null-safety-brightgreen)](https://dart.dev/null-safety)
 [![Pure Dart](https://img.shields.io/badge/pure-Dart-00b9fc?logo=dart&logoColor=white)](https://dart.dev)
 [![No Flutter](https://img.shields.io/badge/Flutter-not%20required-success?logo=flutter&logoColor=white)](https://dart.dev)
+[![Dart CI](https://github.com/gmpassos/java_interop/actions/workflows/dart.yml/badge.svg?branch=main)](https://github.com/gmpassos/java_interop/actions/workflows/dart.yml)
+[![Last Commits](https://img.shields.io/github/last-commit/gmpassos/java_interop?logo=git&logoColor=white)](https://github.com/gmpassos/java_interop/commits/main)
+[![Pull Requests](https://img.shields.io/github/issues-pr/gmpassos/java_interop?logo=github&logoColor=white)](https://github.com/gmpassos/java_interop/pulls)
+[![Code size](https://img.shields.io/github/languages/code-size/gmpassos/java_interop?logo=github&logoColor=white)](https://github.com/gmpassos/java_interop)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green?logo=open-source-initiative&logoColor=green)](https://www.apache.org/licenses/LICENSE-2.0.txt)
 
 **Call Java from pure Dart, over JNI, with nothing but `dart:ffi`.**

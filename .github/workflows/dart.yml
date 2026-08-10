@@ -1,0 +1,61 @@
+name: Dart CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dart-lang/setup-dart@v1
+      - name: Versions
+        run: |
+          dart --version
+          uname -a
+      - name: Install dependencies
+        run: dart pub get
+      - name: Upgrade dependencies
+        run: dart pub upgrade
+      - name: dart format
+        run: dart format -o none --set-exit-if-changed .
+      - name: dart analyze
+        run: dart analyze --fatal-infos --fatal-warnings .
+      - name: dart doc
+        run: dart doc --dry-run
+
+  test:
+    # Both platforms on purpose: locating and loading libjvm is per-platform,
+    # and it is the part of this package most likely to break on one and not
+    # the other.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest ]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: dart-lang/setup-dart@v1
+      - name: Versions
+        run: |
+          dart --version
+          java -version
+          echo "JAVA_HOME=$JAVA_HOME"
+          uname -a
+      - name: Install dependencies
+        run: dart pub get
+      - name: Build the Java fixtures
+        # setup-java exports JAVA_HOME, which is the first thing both
+        # java_home.sh and searchLibjvm look at.
+        run: ./build.sh
+      - name: Run tests
+        run: dart test
+      - name: Run the example
+        run: dart run example/main.dart
