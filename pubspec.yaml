@@ -5,7 +5,17 @@ description: >-
   with full primitive coverage and Java-to-Dart exception translation.
   Deliberately avoids package:jni, which requires the Flutter SDK.
 version: 1.1.1
-publish_to: none
+
+homepage: https://github.com/gmpassos/java_interop
+repository: https://github.com/gmpassos/java_interop
+issue_tracker: https://github.com/gmpassos/java_interop/issues
+
+topics:
+  - java
+  - jni
+  - ffi
+  - interop
+  - jvm
 
 environment:
   sdk: ^3.12.2

@@ -493,7 +493,8 @@ failing with a native error from inside `DynamicLibrary.open`.
 
 ## Source
 
-Part of the [`nfeflash_nfe_generator`](../../) package, under `example/`.
+[github.com/gmpassos/java_interop](https://github.com/gmpassos/java_interop) —
+issues and pull requests welcome.
 
 # Author
 
