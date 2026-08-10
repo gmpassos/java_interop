@@ -1,214 +1,314 @@
-/// A tour of the whole API surface, runnable end to end.
+/// A tour of the whole API surface, runnable end to end — against the JDK.
 ///
-/// This is the reference sweep: every feature, once, against the test fixtures.
-/// For a specific task, the neighbouring examples are the better read —
+/// Every feature once, using only classes the JVM already has on its bootstrap
+/// loader, so this needs no jar and no class path. That is also the point: the
+/// binding is not tied to fixtures built for it, and neither is your code.
+///
+/// For a specific task the neighbouring examples are the better read —
 /// `jdk_apis.dart` for real JDK libraries, `collections.dart` for `java.util`,
-/// `performance.dart` for calling Java in a loop. See `example.md`.
+/// `performance.dart` for calling Java in a loop, `greeter/` for the smallest
+/// possible program. See `example.md`.
 ///
 /// ```sh
-/// ./test/build.sh && dart run example/main.dart
+/// dart run example/main.dart
 /// ```
 library;
 
-import 'dart:io';
-
 import 'package:java_interop/java_interop.dart';
 
-/// Prints an aligned `label = value` line, so the output reads as a table.
-void _show(String label, Object? value) => print('${label.padRight(18)}$value');
+/// Prints an aligned `label  value` line, so the output reads as a table.
+void _show(String label, Object? value) => print('${label.padRight(22)}$value');
 
-void main(List<String> arguments) {
-  final jar = arguments.isNotEmpty
-      ? arguments.first
-      : 'test/build/fixtures.jar';
-  if (!File(jar).existsSync()) {
-    stderr.writeln('Jar not found: $jar\nBuild it first with ./test/build.sh');
-    exitCode = 1;
+void main() {
+  final Jvm jvm;
+  try {
+    jvm = Jvm.startOrAttach();
+  } on JniError catch (e) {
+    print('No JVM available:\n$e');
     return;
   }
-
-  // Starts a JVM, or attaches to the one this process already has.
-  final jvm = Jvm.startOrAttach(classPath: [jar]);
   print('JNI version: 0x${jvm.version.toRadixString(16)}');
 
-  _callTheJdk(jvm);
-  _fixtures(jvm);
+  _classesAndMethods(jvm);
+  _everyPrimitive(jvm);
+  _fields(jvm);
   _arrays(jvm);
   _boxing(jvm);
   _exceptions(jvm);
   _references(jvm);
 }
 
-void _callTheJdk(Jvm jvm) {
-  print('\n--- calling the JDK ---');
+/// Constructors, instance methods, static methods, and the types they return.
+void _classesAndMethods(Jvm jvm) {
+  print('\n--- classes, constructors and methods ---');
+
+  // A constructor taking a String, then instance methods on the result.
+  final builderClass = JavaClass.forName(jvm, 'java.lang.StringBuilder');
+  final builder = builderClass.newInstance('(Ljava/lang/String;)V', ['Hello']);
+
+  builder.call('append', '(Ljava/lang/String;)Ljava/lang/StringBuilder;', [
+    ', Dart',
+  ]);
+  builder.call('append', '(C)Ljava/lang/StringBuilder;', ['!'.codeUnitAt(0)]);
+
+  _show('StringBuilder', builder.javaToString());
+  _show('  .length() -> I', builder.call('length', '()I'));
+
+  // A reference return: a JavaObject you own and must release. It is the same
+  // builder, since reverse() returns `this`.
+  final reversed =
+      builder.call('reverse', '()Ljava/lang/StringBuilder;') as JavaObject;
+  _show('  .reverse() -> obj', reversed.javaToString());
+  reversed.release();
+
+  // A void return, and a static method on a different class.
+  builder.call('setLength', '(I)V', [0]);
+  _show('  .setLength(0) -> V', 'length now ${builder.call('length', '()I')}');
 
   final math = JavaClass.forName(jvm, 'java.lang.Math');
   _show('Math.abs(-5)', math.callStatic('abs', '(I)I', [-5]));
   _show('Math.sqrt(16)', math.callStatic('sqrt', '(D)D', [16.0]));
-  _show('Math.PI', math.getStaticField('PI', JniType.double_));
+
+  // The runtime class of an object, resolved lazily and then held.
+  _show('builder.type.name', builder.type.name);
+
+  final charSequence = JavaClass.forName(jvm, 'java.lang.CharSequence');
+  _show('is a CharSequence', builder.isInstanceOf(charSequence));
+  charSequence.release();
+
+  builder.release();
   math.release();
-
-  final list = JavaClass.forName(jvm, 'java.util.ArrayList');
-  final instance = list.newInstance();
-  instance.call('add', '(Ljava/lang/Object;)Z', ['first']);
-  instance.call('add', '(Ljava/lang/Object;)Z', ['second']);
-  _show(
-    'ArrayList',
-    '${instance.javaToString()} (size ${instance.call('size', '()I')})',
-  );
-  instance.release();
-  list.release();
+  builderClass.release();
 }
 
-void _fixtures(Jvm jvm) {
-  print('\n--- constructors, methods and fields ---');
+/// Each of the eight primitives passed across the boundary and read back.
+///
+/// `String.valueOf` is overloaded per primitive, so the descriptor alone
+/// decides which one is called — and the text that comes back proves the value
+/// landed in the right bytes of its `jvalue` slot. A `float` read as a `double`
+/// would not print `1.5`.
+void _everyPrimitive(Jvm jvm) {
+  print('\n--- every primitive, in and out ---');
 
-  final fixtures = JavaClass.forName(jvm, 'com.nfeflash.example.Fixtures');
+  final string = JavaClass.forName(jvm, 'java.lang.String');
+  const to = 'Ljava/lang/String;';
 
-  final object = fixtures.newInstance('(Ljava/lang/String;I)V', ['demo', 7]);
-  _show('label', object.call('getLabel', '()Ljava/lang/String;'));
-  _show('number', object.call('getNumber', '()I'));
-
-  // Every primitive in one call, to show jvalue packing.
+  _show('boolean  (Z)', string.callStatic('valueOf', '(Z)$to', [true]));
+  _show('char     (C)', string.callStatic('valueOf', '(C)$to', [0x00e7]));
+  _show('int      (I)', string.callStatic('valueOf', '(I)$to', [2147483647]));
   _show(
-    'mixed',
-    object.call('mixed', '(ZBCSIJFD)Ljava/lang/String;', [
-      true,
-      -128,
-      0x0041,
-      -32768,
-      2147483647,
-      9223372036854775807,
-      1.5,
-      2.5,
-    ]),
+    'long     (J)',
+    string.callStatic('valueOf', '(J)$to', [9223372036854775807]),
+  );
+  _show('float    (F)', string.callStatic('valueOf', '(F)$to', [1.5]));
+  _show(
+    'double   (D)',
+    string.callStatic('valueOf', '(D)$to', [2.718281828459045]),
   );
 
-  // Fields, read and written.
-  _show('intField', object.getField('intField', JniType.int_));
-  object.setField('stringField', JniType.string, 'written from Dart');
-  _show('stringField', object.getField('stringField', JniType.string));
+  // byte and short have no valueOf overload — they would widen to int.
+  final byte = JavaClass.forName(jvm, 'java.lang.Byte');
+  final short = JavaClass.forName(jvm, 'java.lang.Short');
+  _show('byte     (B)', byte.callStatic('toString', '(B)$to', [-128]));
+  _show('short    (S)', short.callStatic('toString', '(S)$to', [-32768]));
+
+  // Several widths packed into one argument array, in one call.
+  final greeting = JavaObject(jvm, jvm.newString('Hello World'));
   _show(
-    'staticIntField',
-    fixtures.getStaticField('staticIntField', JniType.int_),
+    'regionMatches',
+    greeting.call('regionMatches', '(ZI${to}II)Z', [true, 6, 'WORLD', 0, 5]),
   );
 
-  object.release();
-  fixtures.release();
+  greeting.release();
+  short.release();
+  byte.release();
+  string.release();
 }
 
+/// Static and instance fields, read and written.
+void _fields(Jvm jvm) {
+  print('\n--- fields ---');
+
+  // Static reads cover all eight primitive descriptors.
+  for (final (className, field, descriptor) in const [
+    ('java.lang.Byte', 'MIN_VALUE', JniType.byte),
+    ('java.lang.Short', 'MAX_VALUE', JniType.short),
+    ('java.lang.Integer', 'MAX_VALUE', JniType.int_),
+    ('java.lang.Long', 'MAX_VALUE', JniType.long),
+    ('java.lang.Float', 'MAX_VALUE', JniType.float),
+    ('java.lang.Double', 'MAX_VALUE', JniType.double_),
+    ('java.lang.Character', 'MAX_VALUE', JniType.char),
+    ('java.lang.Boolean', 'TRUE', 'Ljava/lang/Boolean;'),
+  ]) {
+    final clazz = JavaClass.forName(jvm, className);
+    final short = className.split('.').last;
+    _show('$short.$field', clazz.getStaticField(field, descriptor));
+    clazz.release();
+  }
+
+  // Instance fields, read and written. java.io.StreamTokenizer is the rare
+  // java.base class with public mutable fields: ttype (int), nval (double)
+  // and sval (String).
+  final readerClass = JavaClass.forName(jvm, 'java.io.StringReader');
+  final reader = readerClass.newInstance('(Ljava/lang/String;)V', ['42 hello']);
+
+  final tokenizerClass = JavaClass.forName(jvm, 'java.io.StreamTokenizer');
+  final tokenizer = tokenizerClass.newInstance('(Ljava/io/Reader;)V', [reader]);
+
+  tokenizer.call('nextToken', '()I');
+  _show('tokenizer.nval', tokenizer.getField('nval', JniType.double_));
+
+  tokenizer.call('nextToken', '()I');
+  _show('tokenizer.sval', tokenizer.getField('sval', JniType.string));
+
+  tokenizer.setField('ttype', JniType.int_, 99);
+  _show(
+    'tokenizer.ttype',
+    '${tokenizer.getField('ttype', JniType.int_)} '
+        '(written from Dart)',
+  );
+
+  tokenizer.release();
+  tokenizerClass.release();
+  reader.release();
+  readerClass.release();
+}
+
+/// Arrays in both directions, including one Java mutates in place.
 void _arrays(Jvm jvm) {
   print('\n--- arrays ---');
 
-  final fixtures = JavaClass.forName(jvm, 'com.nfeflash.example.Fixtures');
+  final text = JavaObject(jvm, jvm.newString('gamma,alpha,beta'));
 
-  // An array result knows its element type and reads back as a typed list.
-  final fromJava = fixtures.callStatic('intArray', '()[I') as JavaArray;
-  _show('int[] from Java', fromJava.toList());
-  fromJava.release();
+  // Java-created arrays arrive as a JavaArray that knows its element type.
+  final parts =
+      text.call('split', '(Ljava/lang/String;)[Ljava/lang/String;', [','])
+          as JavaArray;
+  _show('"…".split(",")', parts.toList());
 
-  // A Dart List is converted for you, and the temporary array released.
+  final chars = text.call('toCharArray', '()[C') as JavaArray;
+  _show('"…".toCharArray()', '${chars.length} UTF-16 code units');
+
+  final bytes = text.call('getBytes', '()[B') as JavaArray;
+  _show('"…".getBytes()', '${bytes.length} bytes, first ${bytes[0]}');
+
+  final arrays = JavaClass.forName(jvm, 'java.util.Arrays');
+
+  // A Dart List converts on the way in, and the temporary array is released.
   _show(
-    'sumInts',
-    fixtures.callStatic('sumInts', '([I)I', [
-      [1, 2, 3, 4],
-    ]),
-  );
-  const joinStrings = '([Ljava/lang/String;)Ljava/lang/String;';
-  _show(
-    'joinStrings',
-    fixtures.callStatic('joinStrings', joinStrings, [
-      ['a', 'b', 'c'],
-    ]),
-  );
-  _show(
-    'sumNested',
-    fixtures.callStatic('sumNested', '([[I)I', [
-      [
-        [1, 2],
-        [3],
-      ],
+    'Arrays.toString',
+    arrays.callStatic('toString', '([I)Ljava/lang/String;', [
+      [3, 1, 2],
     ]),
   );
 
-  // Or build one explicitly, to keep it across several calls and mutate it.
-  final ints = JavaArray.ofInts(jvm, [10, 20, 30]);
-  ints[0] = 100;
-  _show('JavaArray', '${ints.toList()} (length ${ints.length})');
-  _show('sumInts(that)', fixtures.callStatic('sumInts', '([I)I', [ints]));
-  ints.release();
+  // A JavaArray held across calls, sorted *in place* by Java: the array is
+  // shared, not copied in and forgotten.
+  final numbers = JavaArray.ofInts(jvm, [5, 3, 9, 1]);
+  arrays.callStatic('sort', '([I)V', [numbers]);
+  _show('Arrays.sort(int[])', numbers.toList());
+  numbers[0] = 100;
+  _show('  then numbers[0]=100', numbers.toList());
 
-  // A String[] comes back as Dart strings, null elements included.
-  final strings =
-      fixtures.callStatic('stringArray', '()[Ljava/lang/String;') as JavaArray;
-  _show('String[]', strings.toList());
-  strings.release();
+  // Nested arrays: the element descriptor is itself an array type.
+  final grid = JavaArray.of(jvm, '[I', [
+    [1, 2],
+    [3],
+  ]);
+  _show(
+    'Arrays.deepToString',
+    arrays.callStatic(
+      'deepToString',
+      '([Ljava/lang/Object;)'
+          'Ljava/lang/String;',
+      [grid],
+    ),
+  );
+  final firstRow = grid[0] as JavaArray;
+  _show('  grid[0] is a', '${firstRow.descriptor} -> ${firstRow.toList()}');
 
-  fixtures.release();
+  firstRow.release();
+  grid.release();
+  numbers.release();
+  arrays.release();
+  bytes.release();
+  chars.release();
+  parts.release();
+  text.release();
 }
 
+/// Boxed primitives, in both directions.
 void _boxing(Jvm jvm) {
   print('\n--- boxed primitives ---');
 
-  final fixtures = JavaClass.forName(jvm, 'com.nfeflash.example.Fixtures');
+  final integer = JavaClass.forName(jvm, 'java.lang.Integer');
 
-  // A declared wrapper is boxed on the way in and unboxed on the way out.
+  // A declared wrapper return is unboxed to a Dart int…
   _show(
-    'unboxInteger(42)',
-    fixtures.callStatic('unboxInteger', '(Ljava/lang/Integer;)I', [42]),
+    'Integer.valueOf(7)',
+    integer.callStatic('valueOf', '(I)Ljava/lang/Integer;', [7]),
   );
+  // …and a null one stays null rather than becoming 0.
   _show(
-    'boxInteger(7)',
-    fixtures.callStatic('boxInteger', '(I)Ljava/lang/Integer;', [7]),
+    'Integer.getInteger(?)',
+    integer.callStatic(
+      'getInteger',
+      '(Ljava/lang/String;)Ljava/lang/Integer;',
+      ['no.such.property'],
+    ),
   );
 
-  // For an erased `Object` parameter the wrapper is inferred from the value.
-  const classOf = '(Ljava/lang/Object;)Ljava/lang/String;';
-  _show('classOf(42)', fixtures.callStatic('classOf', classOf, [42]));
-  _show('classOf(2^40)', fixtures.callStatic('classOf', classOf, [1 << 40]));
-  _show('classOf(1.5)', fixtures.callStatic('classOf', classOf, [1.5]));
-  _show('classOf(true)', fixtures.callStatic('classOf', classOf, [true]));
+  // A declared wrapper *parameter* is boxed exactly: Integer.compareTo(Integer).
+  final five = JavaObject(jvm, jvm.boxInt(5));
+  _show(
+    '5.compareTo(7)',
+    five.call('compareTo', '(Ljava/lang/Integer;)I', [7]),
+  );
+  five.release();
 
-  // Which means a generic collection can be driven with plain Dart values.
+  // An erased Object parameter has its wrapper inferred from the Dart value.
   final listClass = JavaClass.forName(jvm, 'java.util.ArrayList');
   final list = listClass.newInstance();
-  for (final value in [1, 2, 3]) {
+  for (final value in [42, 1 << 40, 1.5, true, 'text']) {
     list.call('add', '(Ljava/lang/Object;)Z', [value]);
   }
-  _show(
-    'sumList([1,2,3])',
-    fixtures.callStatic('sumList', '(Ljava/util/List;)I', [list]),
-  );
 
-  // And what a method declared to return `Object` actually handed back.
-  final first = list.call('get', '(I)Ljava/lang/Object;', [0]) as JavaObject;
-  _show('list.get(0)', '${first.toDart()} (${first.type.name})');
-  first.release();
+  for (var i = 0; i < 5; i++) {
+    final element =
+        list.call('get', '(I)Ljava/lang/Object;', [i]) as JavaObject;
+    _show('  list[$i]', '${element.toDart()}  (${element.type.name})');
+    element.release();
+  }
 
   list.release();
   listClass.release();
-  fixtures.release();
+  integer.release();
 }
 
+/// Java throwables arriving as Dart exceptions.
 void _exceptions(Jvm jvm) {
   print('\n--- exceptions ---');
 
-  final fixtures = JavaClass.forName(jvm, 'com.nfeflash.example.Fixtures');
+  final integer = JavaClass.forName(jvm, 'java.lang.Integer');
 
   try {
-    fixtures.callStatic('divide', '(II)I', [1, 0]);
+    integer.callStatic('parseInt', '(Ljava/lang/String;)I', ['not a number']);
   } on JavaException catch (e) {
     _show('caught', e);
-    _show('isA Arithmetic', e.isA('ArithmeticException'));
+    _show('isA NumberFormat…', e.isA('NumberFormatException'));
     _show('stack trace', e.stackTraceText?.split('\n').first);
   }
 
   // The VM is immediately usable again: the pending exception was cleared.
-  _show('still working', fixtures.callStatic('staticSum', '(II)I', [2, 2]));
+  _show(
+    'still working',
+    integer.callStatic('parseInt', '(Ljava/lang/String;)I', ['42']),
+  );
 
-  fixtures.release();
+  integer.release();
 }
 
+/// Reference ownership: scoped locals, and one promoted to survive the scope.
 void _references(Jvm jvm) {
   print('\n--- references ---');
 

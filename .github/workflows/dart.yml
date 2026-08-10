@@ -69,10 +69,10 @@ jobs:
       - name: Run tests
         run: dart test --platform vm --coverage=./coverage
       - name: Run the examples
-        # Every example, so none of them can rot unnoticed. The three JDK-only
-        # ones need no class path; main.dart and the greeter need the jar built
-        # in the step above. ./run.sh resolves and runs example/greeter, which
-        # is its own project.
+        # Every example, so none of them can rot unnoticed. All four in
+        # example/ call only classes the JVM already has, so they need no class
+        # path; ./run.sh builds and runs example/greeter, which owns its own
+        # Java source and jar.
         run: |
           dart run example/jdk_apis.dart
           dart run example/collections.dart

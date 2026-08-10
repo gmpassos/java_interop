@@ -460,7 +460,7 @@ trip. Dart strings are already UTF-16, so this binding uses `NewString` /
 ```sh
 ./build.sh                      # both jars, each beside the sources it comes from
 ./run.sh                        # the small greeter example (example/greeter/)
-dart run example/main.dart      # a tour of the whole feature set
+dart run example/main.dart      # a tour of the whole feature set — no jar needed
 ./test.sh                       # the full suite (builds the fixtures first)
 dart test test/unit             # unit tests only — no JVM needed
 ```
@@ -473,10 +473,11 @@ between the suite and the examples:
 | test suite | `test/java/` | `test/build/fixtures.jar` |
 | greeter example | `example/greeter/java/` | `example/greeter/build/greeter.jar` |
 
-Three of the examples need no jar and no class path, since they call classes
-the JVM already has:
+Every example except the greeter needs no jar and no class path, since they call
+classes the JVM already has:
 
 ```sh
+dart run example/main.dart          # the whole API surface, against the JDK
 dart run example/jdk_apis.dart      # SHA-256, locale currency, deflate/inflate
 dart run example/collections.dart   # ArrayList and HashMap from Dart values
 dart run example/performance.dart   # member-id caching and local frames
