@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.1.1
+
+Repository, examples and CI. **No library changes** — the only edit under `lib/`
+is a corrected doc comment, so upgrading from 1.1.0 changes nothing at runtime.
+
+### Examples
+
+- Three task-oriented examples, none of which needs a jar or a class path:
+  `jdk_apis.dart` (SHA-256 through `MessageDigest`, locale-aware currency
+  through `NumberFormat` and `Locale`, a deflate/inflate round trip using a Java
+  array as a buffer Java writes into), `collections.dart` (`ArrayList` and
+  `HashMap` driven with plain Dart values, ending in reusable `dartListFrom` and
+  `dartMapFrom` converters), and `performance.dart` (holding a `JavaClass` for
+  its member-id cache, and scoping references with `localFrame`, with timings).
+- `example/example.md` indexes all five, says which needs a jar, and points at
+  the right one for a given task.
+- The tour in `example/main.dart` is rewritten against the JDK, so it needs no
+  jar either. `String.valueOf`'s per-primitive overloads make a better
+  demonstration than the old fixtures did: the descriptor alone picks the
+  overload, and the text that comes back proves the value landed in the right
+  bytes of its `jvalue` slot. `Arrays.sort` shows an array Java mutates in
+  place, which the previous example could not.
+- The greeter moved to `example/greeter/`, a standalone project with a path
+  dependency on this package — so it consumes the public API the way a real
+  consumer does, and a gap in the exports fails there first.
+
+### Project layout
+
+- The test suite and the greeter example each own everything they build and run
+  from: `test/java/` → `test/build/fixtures.jar` via `test/build.sh`, and
+  `example/greeter/java/` → `example/greeter/build/greeter.jar` via its own
+  `build.sh`, with a `java_home.sh` apiece. Previously they shared one `java/`
+  directory and one jar, so each compiled and loaded the other's classes.
+- Root `build.sh` delegates to both. `test.sh` and `run.sh` use the one
+  belonging to what they run.
+- Two tests that used the greeter's class moved to the fixtures, for shapes the
+  fixtures already had.
+
+### Repository
+
+- Apache 2.0 `LICENSE`.
+- GitHub Actions CI: format, analyze (`--fatal-infos --fatal-warnings`) and
+  `dart doc` on Linux; the full suite and every example on Linux **and** macOS,
+  since locating and loading `libjvm` is the per-platform part of this package.
+- Coverage collected on both platforms and uploaded to Codecov, gated on the
+  token being present so a fork or a clone without it still builds green.
+- Badges for CI, coverage, last commit, open pull requests and code size.
+
+### Fixed
+
+- The package's own usage snippet told readers to load `build/fixtures.jar`, a
+  filename that never existed anywhere in the repository.
+
 ## 1.1.0
 
 Arrays, boxed primitives and member-id caching at the ergonomic layer. The three
