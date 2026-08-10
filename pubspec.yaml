@@ -1,0 +1,20 @@
+name: java_interop
+description: >-
+  Call Java from pure Dart over JNI, using only dart:ffi. Boots or attaches to a
+  JVM in-process, loads jars, and calls constructors, methods, fields and arrays
+  with full primitive coverage and Java-to-Dart exception translation.
+  Deliberately avoids package:jni, which requires the Flutter SDK.
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  # Pure Dart, no Flutter. Provides the native allocator (malloc/Arena) and
+  # Utf8 helpers that dart:ffi itself does not expose.
+  ffi: ^2.1.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6
