@@ -465,6 +465,18 @@ dart run example/main.dart      # a tour of the whole feature set
 dart test test/unit             # unit tests only — no JVM needed
 ```
 
+Three of the examples need no jar and no class path, since they call classes
+the JVM already has:
+
+```sh
+dart run example/jdk_apis.dart      # SHA-256, locale currency, deflate/inflate
+dart run example/collections.dart   # ArrayList and HashMap from Dart values
+dart run example/performance.dart   # member-id caching and local frames
+```
+
+[`example/example.md`](example/example.md) indexes all five and says which to
+read for a given task.
+
 The suite skips itself with an explanation when no JDK is installed, rather than
 failing with a native error from inside `DynamicLibrary.open`.
 

@@ -61,8 +61,16 @@ jobs:
         run: ./build.sh
       - name: Run tests
         run: dart test --platform vm --coverage=./coverage
-      - name: Run the example
-        run: dart run example/main.dart
+      - name: Run the examples
+        # Every example, so none of them can rot unnoticed. The three JDK-only
+        # ones need no class path; main.dart and the greeter need the jar built
+        # in the step above.
+        run: |
+          dart run example/jdk_apis.dart
+          dart run example/collections.dart
+          dart run example/performance.dart
+          dart run example/main.dart
+          dart run bin/greeter_example.dart
       - name: Generate coverage report
         # --base-directory makes the lcov paths repo-relative, so Codecov lines
         # them up with the source without needing a path fix.
