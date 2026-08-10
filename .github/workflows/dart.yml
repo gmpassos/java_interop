@@ -32,6 +32,33 @@ jobs:
       - name: dart doc
         run: dart doc --dry-run
 
+  min_sdk:
+    # The floor declared in pubspec.yaml, verified rather than asserted. The
+    # analyzer enforces the *language* version on any SDK, but not that the
+    # dependencies resolve or that the runtime APIs used exist that far back.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: "3.10.0"
+      - name: Versions
+        run: |
+          dart --version
+          uname -a
+      - name: Install dependencies
+        run: dart pub get
+      - name: dart analyze
+        run: dart analyze .
+      - name: Build the Java sources
+        run: ./build.sh
+      - name: Run tests
+        run: dart test
+
   test:
     # Both platforms on purpose: locating and loading libjvm is per-platform,
     # and it is the part of this package most likely to break on one and not
