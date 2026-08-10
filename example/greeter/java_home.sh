@@ -1,12 +1,17 @@
 #!/bin/sh
-# Sourced by build.sh and run.sh. Exports JAVA_HOME if it is not already set.
+# Sourced by this project's build.sh and by the repository's run.sh. Exports
+# JAVA_HOME if it is not already set.
+#
+# This example owns its JDK discovery, as it owns its Java source and its jar,
+# so everything it needs to build and run lives in this directory.
 #
 # Homebrew's openjdk kegs are keg-only, so /usr/libexec/java_home does not see
 # them unless they have been symlinked into /Library/Java/JavaVirtualMachines.
 # Check the Homebrew prefixes first, then fall back to the system lookup.
 #
-# Keep the search order in step with `searchLibjvm` in lib/src/java_home.dart,
-# so the shell scripts and the Dart library agree on which JDK is in use.
+# Keep the search order in step with `searchLibjvm` in lib/src/java_home.dart
+# and with test/java_home.sh, so every entry point agrees on which JDK is in
+# use.
 
 if [ -z "${JAVA_HOME:-}" ]; then
   for candidate in \

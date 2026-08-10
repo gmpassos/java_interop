@@ -11,25 +11,38 @@ having it be its own project: it consumes the package the way anything else
 would — through the public API, with nothing under `lib/src` reachable — so a
 gap in what the package exports breaks here first.
 
+It is also self-contained. Everything it needs to build and run is in this
+directory, and it shares nothing with the test suite:
+
+```
+example/greeter/
+  java/com/nfeflash/example/Greeter.java   the class it calls
+  build.sh                                 javac + jar -> build/greeter.jar
+  java_home.sh                             JDK discovery
+  bin/greeter_example.dart                 the program
+  pubspec.yaml                             java_interop: {path: ../../}
+```
+
 ## Running it
 
 ```sh
-../../build.sh          # once: compiles the Java fixtures into build/java_interop.jar
+./build.sh              # once: compiles java/ into build/greeter.jar
 dart pub get
 dart run bin/greeter_example.dart
 ```
 
-Or, from the repository root, which builds the jar for you:
+Or, from the repository root, which does all three:
 
 ```sh
 ./run.sh
 ```
 
-The jar is found by walking up from the working directory, so either works.
-Pass an explicit path to override it:
+The jar is resolved next to this project rather than next to the working
+directory, so `dart run` behaves the same from here or from the root. Pass an
+explicit path to override it:
 
 ```sh
-dart run bin/greeter_example.dart /path/to/java_interop.jar
+dart run bin/greeter_example.dart /path/to/greeter.jar
 ```
 
 ## Expected output
@@ -41,7 +54,8 @@ Greeter.divide(1, 0) threw: JavaException: java.lang.ArithmeticException: / by z
 ```
 
 The Java source it calls is
-[`java/com/nfeflash/example/Greeter.java`](../../java/com/nfeflash/example/Greeter.java),
-which lives in the parent project because the test suite uses it too.
+[`java/com/nfeflash/example/Greeter.java`](java/com/nfeflash/example/Greeter.java),
+here in this project. Nothing in the test suite compiles or loads it, and this
+project loads nothing the test suite builds.
 
 [`JavaException`]: ../../lib/src/errors.dart

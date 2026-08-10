@@ -11,13 +11,14 @@ import 'dart:io';
 import 'package:java_interop/java_interop.dart';
 import 'package:test/test.dart';
 
-/// The fixtures jar, built by `build.sh`.
+/// The fixtures jar, built by `test/build.sh` from `test/java/`.
 ///
 /// Resolved relative to the package root so the suite runs the same way from
-/// any working directory.
+/// any working directory. It belongs to the suite: nothing outside `test/`
+/// compiles it, loads it, or depends on what is in it.
 String get fixturesJarPath {
   final root = _packageRoot();
-  return '$root/build/java_interop.jar';
+  return '$root/test/build/fixtures.jar';
 }
 
 /// The JVM shared by every test, booting it on first use.
@@ -30,7 +31,7 @@ Jvm get testJvm {
   if (!File(jar).existsSync()) {
     throw StateError(
       'Fixtures jar not found at $jar.\n'
-      'Build it first:  ./build.sh   (or run the suite with ./test.sh)',
+      'Build it first:  ./test/build.sh   (or run the suite with ./test.sh)',
     );
   }
   return Jvm.startOrAttach(classPath: [jar]);
@@ -40,7 +41,7 @@ Jvm get testJvm {
 /// of failing with a native error from deep inside `DynamicLibrary.open`.
 String? get skipWithoutJdk {
   if (!File(fixturesJarPath).existsSync()) {
-    return 'fixtures jar not built; run ./build.sh';
+    return 'fixtures jar not built; run ./test/build.sh';
   }
   final search = searchLibjvm();
   if (!search.found) {

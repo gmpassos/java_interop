@@ -6,7 +6,7 @@
 /// [JavaException]s.
 ///
 /// ```dart
-/// final jvm = Jvm.startOrAttach(classPath: ['build/java_interop.jar']);
+/// final jvm = Jvm.startOrAttach(classPath: ['path/to/your.jar']);
 ///
 /// final greeter = JavaClass.forName(jvm, 'com.nfeflash.example.Greeter');
 /// final instance = greeter.newInstance('(Ljava/lang/String;)V', ['Dart']);

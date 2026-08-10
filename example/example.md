@@ -14,11 +14,17 @@ so `dart run` is the whole setup.
 
 ## Layout
 
-`greeter/` is a **standalone Dart project** with its own `pubspec.yaml`,
-`analysis_options.yaml` and [`README`](greeter/README.md). It depends on
-`java_interop` by path, so it exercises the package through its public API the
-way a real consumer would — nothing under `lib/src` is reachable from it, and a
-gap in the package's exports fails there before it fails for anyone else.
+`greeter/` is a **standalone, self-contained project**: its own `pubspec.yaml`,
+`analysis_options.yaml`, [`README`](greeter/README.md), Java source, build
+script and JDK discovery. It depends on `java_interop` by path, so it exercises
+the package through its public API the way a real consumer would — nothing under
+`lib/src` is reachable from it, and a gap in the package's exports fails there
+before it fails for anyone else.
+
+It shares nothing with the test suite in either direction: the suite owns
+`test/java/` and builds `test/build/fixtures.jar`, the greeter owns
+`example/greeter/java/` and builds `example/greeter/build/greeter.jar`, and
+neither compiles or loads the other's.
 
 The other four are plain files belonging to the parent package, which keeps them
 one `dart run` away with no separate `pub get`.
@@ -34,6 +40,9 @@ example/
     pubspec.yaml            java_interop: {path: ../../}
     analysis_options.yaml
     README.md
+    build.sh                javac + jar -> build/greeter.jar
+    java_home.sh            JDK discovery
+    java/com/nfeflash/example/Greeter.java
     bin/greeter_example.dart
 ```
 
@@ -47,19 +56,23 @@ dart run example/collections.dart
 dart run example/performance.dart
 ```
 
-The two that use the `com.nfeflash.example` fixtures need the jar built first:
+The other two need a jar built first, and each builds its own:
 
 ```sh
-./build.sh                      # compiles java/ into build/java_interop.jar
+./test/build.sh                 # test/java/ -> test/build/fixtures.jar
 dart run example/main.dart
 
-./run.sh                        # builds if needed, then the greeter
+./run.sh                        # builds greeter.jar if needed, then runs it
 ```
 
-The greeter can also be run as the separate project it is:
+`./build.sh` at the repository root builds both, by delegating to the project
+that owns each.
+
+The greeter can also be built and run entirely as the separate project it is:
 
 ```sh
 cd example/greeter
+./build.sh
 dart pub get
 dart run bin/greeter_example.dart
 ```

@@ -1,21 +1,15 @@
 #!/bin/sh
-# Builds the jar if needed, then runs the greeter example against it.
+# Builds the greeter's jar if needed, then runs the greeter example.
 #
-# The greeter lives in example/greeter/, which is its own Dart project with a
-# path dependency on this one, so it needs its own `pub get` before it can run.
+# example/greeter/ is its own Dart project with its own Java source, so both the
+# build and the run happen in there; this script is just the shortcut from the
+# repository root.
 set -eu
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/example/greeter"
 . ./java_home.sh
 
-[ -f build/java_interop.jar ] || ./build.sh
+[ -f build/greeter.jar ] || ./build.sh
 
-JAR="$(pwd)/build/java_interop.jar"
-
-cd example/greeter
 dart pub get --offline >/dev/null 2>&1 || dart pub get
-
-if [ "$#" -gt 0 ]; then
-  exec dart run bin/greeter_example.dart "$@"
-fi
-exec dart run bin/greeter_example.dart "$JAR"
+exec dart run bin/greeter_example.dart "$@"

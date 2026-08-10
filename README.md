@@ -145,12 +145,12 @@ brew install openjdk@21
 ```
 
 That formula is keg-only, so `/usr/libexec/java_home` will not find it unless
-you symlink it. `java_home.sh` checks the Homebrew prefixes first, which is why
-the scripts below work with no shell setup:
+you symlink it. The `java_home.sh` each project carries checks the Homebrew
+prefixes first, which is why the scripts below work with no shell setup:
 
 ```sh
-./build.sh   # javac + jar  -> build/java_interop.jar
-./run.sh     # builds if needed, then runs the example
+./build.sh   # both jars: the test fixtures and the greeter's own
+./run.sh     # builds if needed, then runs the greeter example
 ./test.sh    # builds if needed, then runs the test suite
 ```
 
@@ -168,7 +168,7 @@ dart run example/main.dart
 ```dart
 import 'package:java_interop/java_interop.dart';
 
-final jvm = Jvm.startOrAttach(classPath: ['build/java_interop.jar']);
+final jvm = Jvm.startOrAttach(classPath: ['example/greeter/build/greeter.jar']);
 
 final greeter = JavaClass.forName(jvm, 'com.nfeflash.example.Greeter');
 final instance = greeter.newInstance('(Ljava/lang/String;)V', ['Dart']);
@@ -458,12 +458,20 @@ trip. Dart strings are already UTF-16, so this binding uses `NewString` /
 ## Running the example and tests
 
 ```sh
-./build.sh                      # compile the Java fixtures into build/java_interop.jar
+./build.sh                      # both jars, each beside the sources it comes from
 ./run.sh                        # the small greeter example (example/greeter/)
 dart run example/main.dart      # a tour of the whole feature set
-./test.sh                       # the full suite (builds the jar first)
+./test.sh                       # the full suite (builds the fixtures first)
 dart test test/unit             # unit tests only — no JVM needed
 ```
+
+Each project builds its own jar from its own Java sources, so nothing is shared
+between the suite and the examples:
+
+| Project | Sources | Jar |
+| --- | --- | --- |
+| test suite | `test/java/` | `test/build/fixtures.jar` |
+| greeter example | `example/greeter/java/` | `example/greeter/build/greeter.jar` |
 
 Three of the examples need no jar and no class path, since they call classes
 the JVM already has:

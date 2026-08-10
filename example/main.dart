@@ -6,7 +6,7 @@
 /// `performance.dart` for calling Java in a loop. See `example.md`.
 ///
 /// ```sh
-/// ./build.sh && dart run example/main.dart
+/// ./test/build.sh && dart run example/main.dart
 /// ```
 library;
 
@@ -18,9 +18,11 @@ import 'package:java_interop/java_interop.dart';
 void _show(String label, Object? value) => print('${label.padRight(18)}$value');
 
 void main(List<String> arguments) {
-  final jar = arguments.isNotEmpty ? arguments.first : 'build/java_interop.jar';
+  final jar = arguments.isNotEmpty
+      ? arguments.first
+      : 'test/build/fixtures.jar';
   if (!File(jar).existsSync()) {
-    stderr.writeln('Jar not found: $jar\nBuild it first with ./build.sh');
+    stderr.writeln('Jar not found: $jar\nBuild it first with ./test/build.sh');
     exitCode = 1;
     return;
   }

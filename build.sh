@@ -1,21 +1,12 @@
 #!/bin/sh
-# Compiles the Java sources under java/ into build/java_interop.jar.
+# Builds every jar in the repository, by delegating to the project that owns it.
 #
-# The jar is a build artefact (build/ is gitignored); every entry point that
-# needs it -- run.sh, the tests, the example -- builds it on demand.
+# There is no shared jar any more: the test fixtures belong to the test suite
+# and the greeter's class belongs to the example that calls it, so each builds
+# its own next to its own sources. This script is the convenience that runs both.
 set -eu
 
 cd "$(dirname "$0")"
-. ./java_home.sh
 
-echo "JAVA_HOME=$JAVA_HOME"
-
-rm -rf build/classes
-mkdir -p build/classes
-
-find java -name '*.java' -print0 \
-  | xargs -0 "$JAVA_HOME/bin/javac" -Xlint:all -d build/classes
-
-"$JAVA_HOME/bin/jar" --create --file build/java_interop.jar -C build/classes .
-
-echo "built $(pwd)/build/java_interop.jar"
+./test/build.sh
+./example/greeter/build.sh

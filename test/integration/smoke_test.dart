@@ -13,17 +13,16 @@ void main() {
       expect(Jvm.isRunning, isTrue);
       expect(jvm.version, greaterThanOrEqualTo(JniVersion.v1_6));
 
-      final greeter = JavaClass.forName(jvm, 'com.nfeflash.example.Greeter');
-      addTearDown(greeter.release);
+      final fixtures = JavaClass.forName(jvm, 'com.nfeflash.example.Fixtures');
+      addTearDown(fixtures.release);
 
-      final instance = greeter.newInstance('(Ljava/lang/String;)V', ['Dart']);
+      // The shape of the quickstart: construct with a String, call an instance
+      // method that returns one, then a static method returning a primitive.
+      final instance = fixtures.newInstance('(Ljava/lang/String;)V', ['Dart']);
       addTearDown(instance.release);
 
-      expect(
-        instance.call('greet', '()Ljava/lang/String;'),
-        allOf(startsWith('Hello, Dart!'), contains('from Java')),
-      );
-      expect(greeter.callStatic('add', '(II)I', [2, 40]), 42);
+      expect(instance.call('getLabel', '()Ljava/lang/String;'), 'Dart');
+      expect(fixtures.callStatic('staticSum', '(II)I', [2, 40]), 42);
     });
   }, skip: skipWithoutJdk);
 }

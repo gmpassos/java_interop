@@ -10,8 +10,9 @@ include: package:lints/recommended.yaml
 
 analyzer:
   exclude:
-    # javac output and the jar, rebuilt by build.sh.
-    - build/**
+    # javac output and the jars, rebuilt by build.sh. Each project builds its
+    # own beside its sources, so this matches at any depth.
+    - "**/build/**"
 
 # For more information about the core and recommended set of lints, see
 # https://dart.dev/go/core-lints

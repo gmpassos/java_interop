@@ -1,15 +1,17 @@
 /// The smallest useful java_interop program.
 ///
-/// A standalone project: its pubspec depends on `java_interop` by path, so this
-/// is what using the package from the outside actually looks like.
+/// A standalone project: it owns the Java class it calls (`java/`), the script
+/// that compiles it (`build.sh`), the JDK discovery that script uses
+/// (`java_home.sh`), and a pubspec that depends on `java_interop` by path — so
+/// this is what using the package from the outside actually looks like.
 ///
 /// ```sh
-/// ../../build.sh                      # once, to compile the fixtures jar
+/// ./build.sh                          # once, to compile java/ into build/greeter.jar
 /// dart pub get
-/// dart run bin/greeter_example.dart [path/to/java_interop.jar]
+/// dart run bin/greeter_example.dart [path/to/greeter.jar]
 /// ```
 ///
-/// Or from the repository root, which builds the jar first: `./run.sh`.
+/// Or, from the repository root: `./run.sh`, which does all three.
 library;
 
 import 'dart:io';
@@ -17,14 +19,13 @@ import 'dart:io';
 import 'package:java_interop/java_interop.dart';
 
 void main(List<String> arguments) {
-  final jar = arguments.isNotEmpty ? arguments.first : _findFixturesJar();
+  final jar = arguments.isNotEmpty ? arguments.first : _defaultJar();
 
-  if (jar == null || !File(jar).existsSync()) {
+  if (!File(jar).existsSync()) {
     stderr.writeln(
-      'Fixtures jar not found${jar == null ? '' : ' at $jar'}.\n'
-      'Build it first with ./build.sh in the repository root, or pass the '
-      'path:\n'
-      '  dart run bin/greeter_example.dart path/to/java_interop.jar',
+      'Jar not found: $jar\n'
+      'Build it first with ./build.sh in this directory, or pass the path:\n'
+      '  dart run bin/greeter_example.dart path/to/greeter.jar',
     );
     exitCode = 1;
     return;
@@ -52,21 +53,16 @@ void main(List<String> arguments) {
   // and the process is about to exit anyway.
 }
 
-/// Looks for `build/java_interop.jar` from the current directory upwards.
+/// `build/greeter.jar`, resolved next to this project rather than next to
+/// whatever the working directory happens to be.
 ///
-/// This project sits three levels below the repository root, so a plain
-/// relative path would only work from one working directory. Walking up means
-/// `dart run` behaves the same from here, from `example/`, or from the root.
-String? _findFixturesJar() {
-  var directory = Directory.current.absolute;
-
-  for (var i = 0; i < 6; i++) {
-    final candidate = File('${directory.path}/build/java_interop.jar');
-    if (candidate.existsSync()) return candidate.path;
-
-    final parent = directory.parent;
-    if (parent.path == directory.path) break;
-    directory = parent;
-  }
-  return null;
+/// `bin/greeter_example.dart` is one level below the project root, so the jar
+/// this project builds is always at `../build/greeter.jar` from the script —
+/// which makes `dart run` behave the same from here or from the repository
+/// root.
+String _defaultJar() {
+  final script = File.fromUri(Platform.script).absolute;
+  final projectRoot = script.parent.parent;
+  return '${projectRoot.path}${Platform.pathSeparator}'
+      'build${Platform.pathSeparator}greeter.jar';
 }

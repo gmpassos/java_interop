@@ -344,21 +344,21 @@ void main() {
     });
 
     test('newObject + callObjectMethod round-trip', () {
-      final clazz = autoRelease(jvm.findClass('com.nfeflash.example.Greeter'));
+      final clazz = autoRelease(jvm.findClass('com.nfeflash.example.Fixtures'));
       final constructor = jvm.methodId(
         clazz,
         '<init>',
         '(Ljava/lang/String;)V',
       );
-      final name = autoRelease(jvm.newString('Raw'));
+      final label = autoRelease(jvm.newString('Raw'));
 
-      final greeter = autoRelease(
-        jvm.newObject(clazz, constructor, [JValue.fromPointer(name.pointer)]),
+      final instance = autoRelease(
+        jvm.newObject(clazz, constructor, [JValue.fromPointer(label.pointer)]),
       );
-      final greet = jvm.methodId(clazz, 'greet', '()Ljava/lang/String;');
-      final greeting = autoRelease(jvm.callObjectMethod(greeter, greet));
+      final getLabel = jvm.methodId(clazz, 'getLabel', '()Ljava/lang/String;');
+      final result = autoRelease(jvm.callObjectMethod(instance, getLabel));
 
-      expect(jvm.stringFrom(greeting), startsWith('Hello, Raw!'));
+      expect(jvm.stringFrom(result), 'Raw');
     });
   });
 }

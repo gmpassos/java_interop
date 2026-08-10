@@ -60,7 +60,9 @@ jobs:
           uname -a
       - name: Install dependencies
         run: dart pub get
-      - name: Build the Java fixtures
+      - name: Build the Java sources
+        # Both jars: test/build/fixtures.jar for the suite, and
+        # example/greeter/build/greeter.jar for the example that owns it.
         # setup-java exports JAVA_HOME, which is the first thing both
         # java_home.sh and searchLibjvm look at.
         run: ./build.sh
