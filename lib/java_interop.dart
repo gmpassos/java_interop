@@ -42,6 +42,8 @@ export 'src/java_class.dart' show JavaClass, JavaObject;
 export 'src/java_home.dart'
     show defaultLibjvmPath, searchLibjvm, libjvmUnder, LibjvmSearch;
 export 'src/java_ref.dart' show JavaRef, JavaRefKind, JvmLocalFrames;
+export 'src/java_signature.dart'
+    show JType, JSig, JavaMethod, JavaField, jsig, jtype;
 export 'src/jni_slots.dart' show JniFn, JniVmFn, JniVersion, JniResult;
 export 'src/jvalue.dart' show JValue, floatFromBits, doubleFromBits;
 export 'src/jvm.dart' show Jvm, classPathSeparator;

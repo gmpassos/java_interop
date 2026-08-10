@@ -3,7 +3,7 @@ description: >-
   Call Java from pure Dart over JNI, using only dart:ffi and no Flutter SDK.
   Boots or attaches to a JVM in-process, loads jars, and calls constructors,
   methods, fields and arrays.
-version: 1.1.1
+version: 1.2.0
 
 homepage: https://github.com/gmpassos/java_interop
 repository: https://github.com/gmpassos/java_interop

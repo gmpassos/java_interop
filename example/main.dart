@@ -30,6 +30,7 @@ void main() {
   print('JNI version: 0x${jvm.version.toRadixString(16)}');
 
   _classesAndMethods(jvm);
+  _declarations(jvm);
   _everyPrimitive(jvm);
   _fields(jvm);
   _arrays(jvm);
@@ -78,6 +79,44 @@ void _classesAndMethods(Jvm jvm) {
 
   builder.release();
   math.release();
+  builderClass.release();
+}
+
+/// The same calls again, written as Java rather than as descriptors.
+///
+/// `(Ljava/lang/String;I)V` is easy to get wrong in ways that only surface as a
+/// `NoSuchMethodError` from inside the VM. A declaration is what `javap` prints,
+/// so it can be pasted in unedited.
+void _declarations(Jvm jvm) {
+  print('\n--- signatures written as Java ---');
+
+  final builderClass = JavaClass.forName(jvm, 'java.lang.StringBuilder');
+
+  // Name and types in one declaration, instead of ('append', '(I)L…;').
+  final builder = builderClass.newJava('(String)', ['count: ']);
+
+  // append returns `this`, so the result is a reference to release.
+  final appended =
+      builder.callJava('StringBuilder append(int)', [42]) as JavaObject;
+  appended.release();
+
+  _show('newJava + callJava', builder.javaToString());
+  _show('  .length()', builder.callJava('int length()'));
+
+  // What each declaration compiles to.
+  _show('jsig', jsig('int add(int, int)'));
+  _show('  with modifiers', jsig('public static int add(int a, int b)'));
+  _show('  generics erased', jsig('java.util.List<String> subList(int, int)'));
+  _show('  varargs', jsig('String format(String, Object...)'));
+  _show('  a constructor', jsig('(String, int)'));
+  _show('jtype', '${jtype('int[][]')}  ${jtype('String')}');
+
+  // Or built from types, which cannot be malformed and can be const.
+  const add = JSig.of([JType.int_, JType.int_], returns: JType.int_);
+  _show('JSig.of', add.descriptor);
+  _show('JType.of(...).array', JType.of('java.util.List').array.descriptor);
+
+  builder.release();
   builderClass.release();
 }
 

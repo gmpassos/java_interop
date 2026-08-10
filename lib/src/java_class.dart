@@ -14,6 +14,7 @@ import 'boxing.dart';
 import 'errors.dart';
 import 'java_array.dart';
 import 'java_ref.dart';
+import 'java_signature.dart';
 import 'jvalue.dart';
 import 'jvm.dart';
 import 'jvm_calls.dart';
@@ -121,6 +122,52 @@ class JavaClass {
     String signature, [
     List<Object?> args = const [],
   ]) => _cast<T>(callStatic(methodName, signature, args), methodName);
+
+  /// Calls a static method named by a Java [declaration], so the name and the
+  /// descriptor are written once, as Java:
+  ///
+  /// ```dart
+  /// fixtures.callJavaStatic('int add(int, int)', [2, 40]);
+  /// ```
+  ///
+  /// See [JavaMethod.parse] for what a declaration may contain.
+  Object? callJavaStatic(String declaration, [List<Object?> args = const []]) {
+    final method = JavaMethod.parse(declaration);
+    return callStatic(
+      _requireName(method, declaration),
+      method.descriptor,
+      args,
+    );
+  }
+
+  /// [callJavaStatic], typed. Throws a [JniError] if the result is not a `T`.
+  T callJavaStaticAs<T>(String declaration, [List<Object?> args = const []]) =>
+      _cast<T>(callJavaStatic(declaration, args), declaration);
+
+  /// Constructs an instance from a Java constructor [declaration]:
+  ///
+  /// ```dart
+  /// clazz.newJava('(String, int)', ['demo', 7]);
+  /// clazz.newJava('void (String)', ['Dart']);   // the same thing
+  /// ```
+  JavaObject newJava(String declaration, [List<Object?> args = const []]) =>
+      newInstance(JavaMethod.parse(declaration).descriptor, args);
+
+  /// Reads a static field named by a Java [declaration]:
+  ///
+  /// ```dart
+  /// fixtures.getJavaStaticField('int staticIntField');
+  /// ```
+  Object? getJavaStaticField(String declaration) {
+    final field = JavaField.parse(declaration);
+    return getStaticField(field.name, field.descriptor);
+  }
+
+  /// Writes a static field named by a Java [declaration].
+  void setJavaStaticField(String declaration, Object? value) {
+    final field = JavaField.parse(declaration);
+    setStaticField(field.name, field.descriptor, value);
+  }
 
   /// Reads a static field. [descriptor] is a *type* descriptor, e.g. `I`.
   Object? getStaticField(String fieldName, String descriptor) {
@@ -269,6 +316,41 @@ class JavaObject {
     String signature, [
     List<Object?> args = const [],
   ]) => _cast<T>(call(methodName, signature, args), methodName);
+
+  /// Calls an instance method named by a Java [declaration], so the name and
+  /// the descriptor are written once, as Java:
+  ///
+  /// ```dart
+  /// instance.callJava('String greet()');
+  /// instance.callJava('String concat(String, String)', ['a', 'b']);
+  /// ```
+  ///
+  /// See [JavaMethod.parse] for what a declaration may contain.
+  Object? callJava(String declaration, [List<Object?> args = const []]) {
+    final method = JavaMethod.parse(declaration);
+    return call(_requireName(method, declaration), method.descriptor, args);
+  }
+
+  /// [callJava], typed. Throws a [JniError] if the result is not a `T`.
+  T callJavaAs<T>(String declaration, [List<Object?> args = const []]) =>
+      _cast<T>(callJava(declaration, args), declaration);
+
+  /// Reads an instance field named by a Java [declaration]:
+  ///
+  /// ```dart
+  /// object.getJavaField('int intField');
+  /// object.getJavaField('String[] names');
+  /// ```
+  Object? getJavaField(String declaration) {
+    final field = JavaField.parse(declaration);
+    return getField(field.name, field.descriptor);
+  }
+
+  /// Writes an instance field named by a Java [declaration].
+  void setJavaField(String declaration, Object? value) {
+    final field = JavaField.parse(declaration);
+    setField(field.name, field.descriptor, value);
+  }
 
   /// Reads an instance field.
   Object? getField(String fieldName, String descriptor) {
@@ -507,6 +589,19 @@ Object? _boxResult(Jvm jvm, String descriptor, Object? raw) {
 T _cast<T>(Object? value, String member) {
   if (value is T) return value;
   throw JniError('$member returned ${value.runtimeType}, expected $T');
+}
+
+/// The method name out of a parsed [declaration], which a call needs and a
+/// constructor declaration does not carry.
+String _requireName(JavaMethod method, String declaration) {
+  final name = method.name;
+  if (name == null) {
+    throw JniError(
+      'no method name in "$declaration"; write it as Java does, e.g. '
+      '"String greet()". Use newJava() for a constructor.',
+    );
+  }
+  return name;
 }
 
 /// `clazz.getName()` — the name of a `jclass` that is already in hand.

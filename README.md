@@ -74,6 +74,11 @@ does not expose).
 - **Signature-driven dispatch.** `JavaClass` / `JavaObject` parse the descriptor
   and pick the right JNI accessor for you — calling `CallIntMethod` on a method
   that returns `long` is undefined behaviour in raw JNI, not an error.
+- **Signatures written as Java.** `callJava('int add(int, int)')` instead of
+  `call('add', '(II)I')`. Paste the declaration from the Java source or from
+  `javap`: modifiers, parameter names, generics and `throws` are ignored. A
+  typed builder (`JSig`, `JType`) covers the cases you want `const` or
+  programmatic.
 - **Correct strings.** The UTF-16 (`jchar`) family, so emoji, CJK and embedded
   NULs survive a round trip. JNI's "UTF-8" is *modified* UTF-8 and does not.
 - **Arrays.** A `JavaArray` that carries its element type: a Dart `List` passes
@@ -97,9 +102,10 @@ does not expose).
   is not poisoned; `throwJava` raises one from Dart.
 - **An escape hatch.** `Jvm.fnSlot(index)` reaches any JNI function this binding
   does not wrap.
-- **Tested.** 310 tests across unit and integration suites, covering every
-  primitive type, both directions of every conversion, arrays and boxing, the
-  reference lifecycle, the exception paths, and the multi-isolate startup race.
+- **Tested.** 366 tests across unit and integration suites, covering every
+  primitive type, both directions of every conversion, arrays and boxing,
+  signature parsing, the reference lifecycle, the exception paths, and the
+  multi-isolate startup race.
 
 ## Architecture
 
@@ -204,6 +210,54 @@ instance.javaToString();                     // [first]
 you pass selects both the Java overload *and* the JNI accessor used to read the
 result, so `(I)I` returns a Dart `int` and `(D)D` a Dart `double`.
 
+### Writing signatures as Java, not as descriptors
+
+A descriptor is easy to get subtly wrong, and it fails in the least helpful way:
+`J` is `long` and `I` is `int`, `Z` is `boolean`, a class needs `L`, a trailing
+`;` and slashes rather than dots — and a mistake surfaces as a
+`NoSuchMethodError` from inside the VM. Write the Java declaration instead:
+
+```dart
+instance.callJava('String greet()');
+fixtures.callJavaStatic('int add(int, int)', [2, 40]);
+clazz.newJava('(String, int)', ['demo', 7]);
+
+object.getJavaField('int intField');
+object.setJavaField('String stringField', 'text');
+```
+
+The declaration is what you would read in the Java source or in `javap` output,
+so it can be pasted in unedited — modifiers, annotations, parameter names,
+generic arguments and a `throws` clause are all ignored, `java.lang` is implicit,
+and varargs count as an array:
+
+```dart
+jsig('public static int add(int a, int b)')            // (II)I
+jsig('java.util.List<String> subList(int, int)')       // (II)Ljava/util/List;
+jsig('void write(byte[]) throws java.io.IOException')  // ([B)V
+jsig('String format(String, Object...)')               // (Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;
+jtype('int[][]')                                       // [[I
+```
+
+`jsig` and `jtype` return the descriptor string, so they drop into the existing
+`call` / `callStatic` / `getField` unchanged. For a signature built
+programmatically — or one you want `const` — there is a typed builder that
+cannot produce a malformed descriptor:
+
+```dart
+const add = JSig.of([JType.int_, JType.int_], returns: JType.int_);  // (II)I
+JSig.ctor([JType.string]);                                          // (Ljava/lang/String;)V
+JType.of('java.util.List');                                         // Ljava/util/List;
+JType.int_.array.array;                                             // [[I
+```
+
+Both routes produce the same `JSig`. Declarations are parsed once and cached, so
+a call in a loop re-parses nothing.
+
+> A malformed declaration is a `JniError` at the call, naming the token that
+> failed — not a `NoSuchMethodError` from the VM later. It is still a runtime
+> check; the typed builder is the compile-time one.
+
 ### Results and arguments
 
 | Java | Dart argument | Dart result |
@@ -233,11 +287,18 @@ final sum = fixtures.callStaticAs<int>('staticSum', '(II)I', [2, 40]);
 ### Fields
 
 ```dart
-object.getField('intField', JniType.int_);              // read
-object.setField('stringField', JniType.string, 'text'); // write (auto-converted)
+object.getJavaField('int intField');                    // read
+object.setJavaField('String stringField', 'text');      // write (auto-converted)
 
-fixtures.getStaticField('staticIntField', JniType.int_);
-fixtures.setStaticField('staticStringField', JniType.string, 'x');
+fixtures.getJavaStaticField('int staticIntField');
+fixtures.setJavaStaticField('String staticStringField', 'x');
+```
+
+Or with the descriptor spelled out, which is what the above resolves to:
+
+```dart
+object.getField('intField', JniType.int_);
+object.setField('stringField', JniType.string, 'text');
 ```
 
 ### Arrays

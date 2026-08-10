@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.2.0
+
+Signatures written as Java, so a descriptor never has to be typed by hand.
+
+A descriptor fails in the least helpful way there is: `J` is `long` and `I` is
+`int`, `Z` is `boolean`, a class needs `L`, a trailing `;` and slashes instead of
+dots — and getting any of it wrong surfaces as a `NoSuchMethodError` from inside
+the VM, pointing at nothing.
+
+### Declarations
+
+- `JavaObject.callJava`, `JavaClass.callJavaStatic` and `JavaClass.newJava` take
+  one Java declaration carrying both the name and the types, so neither is
+  written twice:
+
+  ```dart
+  instance.callJava('String greet()');
+  fixtures.callJavaStatic('int add(int, int)', [2, 40]);
+  clazz.newJava('(String, int)', ['demo', 7]);
+  ```
+
+- `getJavaField` / `setJavaField` and their static counterparts do the same for
+  fields: `object.getJavaField('int intField')`.
+- `callJavaAs<T>` and `callJavaStaticAs<T>` for the typed variants.
+- The declaration is what `javap` prints, so it can be pasted in unedited:
+  modifiers, annotations, parameter names, generic arguments and a `throws`
+  clause are ignored, `java.lang` is implicit, and varargs count as an array.
+- `jsig('int add(int, int)')` and `jtype('int[][]')` return the descriptor
+  string for use with the existing `call` / `callStatic` / `getField`.
+
+### Typed builder
+
+- `JType` and `JSig` build a descriptor that cannot be malformed, and are
+  `const`-constructible for a signature on a hot path:
+
+  ```dart
+  const add = JSig.of([JType.int_, JType.int_], returns: JType.int_);
+  JType.of('java.util.List');
+  JType.int_.array.array;   // [[I
+  ```
+
+- `JavaMethod.parse` and `JavaField.parse` expose the parsed form when the name
+  and the signature are wanted separately. Both cache by declaration string, so
+  a call in a loop re-parses nothing.
+
+### Notes
+
+- Nothing is deprecated: every existing `String signature` API works unchanged,
+  and the new spellings resolve to exactly the same descriptors.
+- A malformed declaration raises a `JniError` at the call site naming the token
+  that failed. That is still a runtime check — the typed builder is the
+  compile-time one.
+
 ## 1.1.1
 
 First release on pub.dev. Repository, examples and CI — **no library changes**:
