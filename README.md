@@ -694,9 +694,10 @@ dart run example/main.dart          # the whole API surface, against the JDK
 dart run example/jdk_apis.dart      # SHA-256, locale currency, deflate/inflate
 dart run example/collections.dart   # ArrayList and HashMap from Dart values
 dart run example/performance.dart   # member-id caching and local frames
+dart run example/threads.dart       # Java's threads, and which calls they may make
 ```
 
-[`example/example.md`](example/example.md) indexes all five and says which to
+[`example/example.md`](example/example.md) indexes all six and says which to
 read for a given task. The greeter is
 [its own project](example/greeter/) with a path dependency on this one, so it
 exercises the package through its public API exactly as a consumer would.

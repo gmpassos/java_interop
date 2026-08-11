@@ -89,6 +89,14 @@ A live proxy keeps its isolate alive, because a JVM thread may still queue a cal
 to it. Releasing it lets the isolate end — so `release()` stays the only thing to
 remember, rather than that *and* tearing down machinery you never asked to build.
 
+`example/threads.dart` runs all of it against the JDK, with no jar: a
+`parallelSort` across every core, a Dart `Runnable` on a `java.lang.Thread` and
+in a fixed pool — four workers, four queued calls, one handler at a time — a
+`Callable` refused with both threads named, `jvm.synchronized` around a
+check-then-act on a synchronized list, and a `CountDownLatch` waited on in
+slices, because the countDown it is waiting for happens in a handler only the
+event loop can run.
+
 ### No jar
 
 `java/dart/jni/DartInvocationHandler.java` is compiled by

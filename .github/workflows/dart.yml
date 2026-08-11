@@ -96,7 +96,7 @@ jobs:
       - name: Run tests
         run: dart test --platform vm --coverage=./coverage
       - name: Run the examples
-        # Every example, so none of them can rot unnoticed. All four in
+        # Every example, so none of them can rot unnoticed. All five in
         # example/ call only classes the JVM already has, so they need no class
         # path; ./run.sh builds and runs example/greeter, which owns its own
         # Java source and jar.
@@ -104,6 +104,7 @@ jobs:
           dart run example/jdk_apis.dart
           dart run example/collections.dart
           dart run example/performance.dart
+          dart run example/threads.dart
           dart run example/main.dart
           ./run.sh
       - name: Generate coverage report
