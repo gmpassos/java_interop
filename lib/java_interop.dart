@@ -50,6 +50,10 @@ export 'src/jvm.dart' show Jvm, classPathSeparator;
 export 'src/jvm_arrays.dart' show JvmArrays;
 export 'src/jvm_calls.dart' show JvmCalls;
 export 'src/jvm_classes.dart' show JvmClasses;
+export 'src/jvm_diagnostics.dart'
+    show JavaRefTypeReport, JvmClassRegistry, JvmDiagnostics;
+export 'src/jvm_monitors.dart' show JvmMonitors;
 export 'src/jvm_fields.dart' show JvmFields;
+export 'src/proxy.dart' show JavaProxy, JavaProxyCall, JvmProxies;
 export 'src/jvm_strings.dart' show JvmStrings;
 export 'src/signatures.dart' show JniSignature, JniType;

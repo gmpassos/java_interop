@@ -301,6 +301,49 @@ typedef PopLocalFrameC = Pointer<Void> Function(Pointer<Void>, Pointer<Void>);
 typedef PopLocalFrameDart =
     Pointer<Void> Function(Pointer<Void>, Pointer<Void>);
 
+/// `jobjectRefType` from jni.h.
+typedef GetObjectRefTypeC = Int32 Function(Pointer<Void>, Pointer<Void>);
+typedef GetObjectRefTypeDart = int Function(Pointer<Void>, Pointer<Void>);
+
+// --- Monitors --------------------------------------------------------------
+
+typedef MonitorC = Int32 Function(Pointer<Void>, Pointer<Void>);
+typedef MonitorDart = int Function(Pointer<Void>, Pointer<Void>);
+
+// --- Class definition and native methods -----------------------------------
+
+/// `DefineClass`. `buf` is `const jbyte*`, i.e. signed, but the bytes of a class
+/// file are unsigned everywhere else in this package.
+typedef DefineClassC =
+    Pointer<Void> Function(
+      Pointer<Void>,
+      Pointer<Utf8>,
+      Pointer<Void>,
+      Pointer<Uint8>,
+      Int32,
+    );
+typedef DefineClassDart =
+    Pointer<Void> Function(
+      Pointer<Void>,
+      Pointer<Utf8>,
+      Pointer<Void>,
+      Pointer<Uint8>,
+      int,
+    );
+
+typedef RegisterNativesC =
+    Int32 Function(
+      Pointer<Void>,
+      Pointer<Void>,
+      Pointer<JniNativeMethod>,
+      Int32,
+    );
+typedef RegisterNativesDart =
+    int Function(Pointer<Void>, Pointer<Void>, Pointer<JniNativeMethod>, int);
+
+typedef UnregisterNativesC = Int32 Function(Pointer<Void>, Pointer<Void>);
+typedef UnregisterNativesDart = int Function(Pointer<Void>, Pointer<Void>);
+
 // --- Arrays ----------------------------------------------------------------
 
 typedef GetArrayLengthC = Int32 Function(Pointer<Void>, Pointer<Void>);
@@ -333,6 +376,14 @@ typedef ArrayRegionDart =
     void Function(Pointer<Void>, Pointer<Void>, int, int, Pointer<Void>);
 
 // --- Structs ---------------------------------------------------------------
+
+/// `JNINativeMethod` from jni.h: the name, the descriptor, and the function to
+/// bind to them.
+final class JniNativeMethod extends Struct {
+  external Pointer<Utf8> name;
+  external Pointer<Utf8> signature;
+  external Pointer<Void> fnPtr;
+}
 
 /// `JavaVMOption` from jni.h.
 final class JavaVMOption extends Struct {

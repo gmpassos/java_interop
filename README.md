@@ -94,18 +94,43 @@ does not expose).
 - **Member ids are cached.** `JavaClass` caches each `jmethodID`/`jfieldID` it
   resolves, and a `JavaObject` holds the runtime class it looked up, so a call
   in a loop pays for `GetMethodID` once instead of once per invocation.
+  `jvm.classFor(name)` keeps one instance per class for the process, so the cache
+  pays off by default rather than by remembering to hold the class yourself.
 - **Explicit reference ownership.** Local and global references, `toGlobal`,
   `isSameObject`, scoped `localFrame`, and a clear Dart error on use-after-
   release instead of handing the VM a dangling pointer.
+  `localFrameReturning` covers the case a scope cannot: building one reference
+  worth keeping, without the dangling handle that returning from `localFrame`
+  silently produces.
 - **Exceptions both ways.** Java throwables become `JavaException` (class name,
-  message, Java stack trace), always cleared before returning so the next call
-  is not poisoned; `throwJava` raises one from Dart.
+  message, Java stack trace, and the `getCause()` chain — which is where the
+  class that explains the failure usually is, since libraries rewrap), always
+  cleared before returning so the next call is not poisoned; `throwJava` raises
+  one from Dart.
+- **Binary data.** `JavaArray.toBytes()` reads a `byte[]` straight into a
+  `Uint8List`, because Java's `byte` is signed and everything in Dart that
+  consumes bytes is not.
+- **Answers about the environment.** `isAttached` (did this call create the VM,
+  or attach to one whose class path you cannot see?), `systemProperty`,
+  `resourceExists` / `resourceUrls`, and `requireClasses` — which fails at
+  startup naming the class *and* the artifact, instead of leaving a
+  `NoClassDefFoundError` to surface from inside a library later.
+- **Java interfaces implemented in Dart.** `jvm.implementInterface(...)` returns a
+  real Java object: listeners, visitors, `Comparator`, SPI. Reentrant calls (the
+  usual kind — Java is only running because Dart called it) are dispatched
+  synchronously and return a value; calls from a thread the JVM owns are queued
+  when they are `void` and refused with a clear Java exception when they are not,
+  so nothing can deadlock.
+- **Monitors.** `jvm.synchronized(object, body)` takes the same lock Java's
+  `synchronized` does, which matters as soon as a Dart callback can mutate state
+  Java's other threads read.
 - **An escape hatch.** `Jvm.fnSlot(index)` reaches any JNI function this binding
   does not wrap.
-- **Tested.** 366 tests across unit and integration suites, covering every
+- **Tested.** 462 tests across unit and integration suites, covering every
   primitive type, both directions of every conversion, arrays and boxing,
-  signature parsing, the reference lifecycle, the exception paths, and the
-  multi-isolate startup race.
+  signature parsing, the reference lifecycle, the exception paths including cause
+  chains and cycles, proxies across threads and isolates, and the multi-isolate
+  startup race.
 
 ## Architecture
 
@@ -395,6 +420,60 @@ try {
 jvm.throwJava('java.lang.IllegalStateException', 'from Dart');
 ```
 
+Read `causes` before deciding what a failure *means*. Libraries rewrap
+constantly — `catch (Exception e) { throw new Wrapper(e.getMessage(), e); }` — so
+the class that identifies the problem is often not `className` but a link
+further down the chain:
+
+```dart
+try {
+  api.callJava('void send()');
+} on JavaException catch (e) {
+  e.className;   // com.example.ApiException — the wrapper
+  e.causes;      // [java.net.SocketTimeoutException: connect timed out, …]
+
+  if (e.isCausedBy('java.net.SocketTimeoutException')) {
+    // Retryable. The same wrapper around a validation failure is not, and only
+    // the chain tells the two apart.
+  }
+  e.causeOf('IOException')?.message;
+}
+```
+
+### Caller-sensitive JDK APIs
+
+Some JDK methods look at *who called them* — `Reflection.getCallerClass()` — to
+pick a class loader, a module, or a resource bundle. Called over JNI there is no
+Java frame above them, so the caller comes back `null` and the method fails in a
+way that has nothing to do with what you asked for:
+
+```
+NullPointerException: Cannot invoke "java.lang.Class.getModule()"
+because "caller" is null
+```
+
+This is a property of those APIs, not a gap in this binding: the same call from a
+`main` works fine. Each has an overload that takes explicitly what it would
+otherwise have inferred.
+
+| Instead of | Call |
+|---|---|
+| `Logger.getLogger(name)` | `LogManager.getLogManager().readConfiguration(stream)` — and it applies to loggers created later, too |
+| `Class.forName(name)` | `Class.forName(name, true, loader)`, or `jvm.findClass` |
+| `ResourceBundle.getBundle(name)` | `ResourceBundle.getBundle(name, locale, loader)` |
+| `DriverManager.getConnection(url)` | a `DataSource` obtained explicitly |
+| `MethodHandles.lookup()` | `MethodHandles.privateLookupIn(someClass, …)` |
+
+Configuring `java.util.logging` is the one most projects hit, because a library
+that logs at `INFO` will otherwise flood stderr:
+
+```dart
+// Not Logger.getLogger(...).setLevel(...) — that throws under JNI.
+final manager = jvm.classFor('java.util.logging.LogManager');
+final properties = utf8.encode('org.noisy.library.level=WARNING\n');
+// ... hand `properties` to readConfiguration via a ByteArrayInputStream ...
+```
+
 ### References and frames
 
 ```dart
@@ -413,6 +492,66 @@ jvm.localFrame(() => kept = jvm.newString('kept').toGlobal());
 jvm.stringFrom(kept);
 kept.release();
 ```
+
+### Implementing a Java interface in Dart
+
+A library that wants a listener, a visitor or a `Comparator` wants an *object*
+implementing an interface. `implementInterface` builds one:
+
+```dart
+final ordering = jvm.implementInterface(
+  'java.util.Comparator',
+  onInvoke: (call) => switch (call.methodName) {
+    'compare' => (call.args[0] as int).compareTo(call.args[1] as int),
+    _ => null,
+  },
+);
+try {
+  jvm.classFor('java.util.Arrays').callJavaStatic(
+    'void sort(Object[], java.util.Comparator)',
+    [values, ordering.instance],
+  );
+} finally {
+  ordering.release();
+}
+```
+
+Arguments arrive as Dart values — `null`, `bool`, `int`, `double`, `String`, or a
+`JavaObject`. The return value is converted for the method's *declared* type, so
+returning `1` from a method declared `byte` is fine: Dart has one integer type and
+the narrowing happens on the Java side, where the declared type is known. Several
+interfaces at once (`implementInterfaces`), per-method handlers
+(`handlers: {'visitStaticText': …}`), and `call.method` for the underlying
+`java.lang.reflect.Method` are all there.
+
+`toString`, `equals` and `hashCode` are answered in Java by default — identity
+equality, identity hash, a name listing the interfaces — because `Proxy` routes
+them to the handler like anything else, and a proxy without them breaks the moment
+it reaches a `HashMap` or a log line. Pass `forwardObjectMethods: true` to take
+them yourself.
+
+**Which thread calls matters.** A reentrant call — Java calling back during a call
+Dart made, which is nearly all of them — runs synchronously on the isolate's own
+thread and returns a value. A call from a thread the JVM owns cannot: Dart aborts
+the process if an `isolateLocal` callback is entered from another thread, and
+blocking that thread until the isolate answers deadlocks as soon as the isolate is
+itself inside a JNI call. So a `void` method is *queued* and runs on the next turn
+of the event loop (`call.isQueued` is true), and a method with a return value
+throws `IllegalStateException` in Java naming both threads. Neither can hang.
+
+An isolate is not pinned to an OS thread, so which thread is "the isolate's" is
+re-checked whenever you read `proxy.instance`. If you cache the `JavaObject` and
+hand it to Java after an `await` that moved the isolate, call
+`proxy.bindCurrentThread()` first — otherwise the call is refused, with a message
+saying so.
+
+There is no jar. The one Java class this needs
+(`java/dart/jni/DartInvocationHandler.java`) is compiled by
+`tool/gen_proxy_class.dart` into checked-in bytes and loaded at runtime with JNI
+`DefineClass`, into a class loader created per isolate. That last part is not
+cosmetic: `RegisterNatives` binds to a *class*, so a shared class would let the
+last isolate to bind steal every other isolate's callbacks — and a callback
+entered from the wrong isolate's thread aborts the process.
 
 ### Dropping to raw JNI
 
@@ -503,17 +642,27 @@ trip. Dart strings are already UTF-16, so this binding uses `NewString` /
 - **No `GetArrayElements`.** Only the region-copy API is bound. The elements
   family may hand back a direct pointer into the Java heap and pin it, which is
   easy to leak and blocks the GC while held.
-- **No reflection helpers, no weak references, no `RegisterNatives`.** Calling
-  Dart *from* Java is out of scope. Overloads are not resolved from argument
-  types either — every call names its descriptor.
+- **No weak references.** Global and local only.
+- **Overloads are not resolved from argument types.** Every call names its
+  descriptor, or a Java declaration that yields one.
+- **A proxy cannot answer a JVM-owned thread that wants a value.** `void` methods
+  from such threads are queued; anything else is refused. See above for why
+  blocking there cannot be made safe.
+- **A live proxy keeps its isolate alive**, since a JVM thread may still queue a
+  call to it. Release it (or the whole runtime) and the isolate ends normally.
 - **Boxing into an erased `Object` is inferred, not known.** A Dart `int` picks
   `Integer` or `Long` by width, which is not always what javac would have
   chosen; box explicitly when the difference is observable.
 - **The member-id cache lives on a `JavaClass`.** Two `JavaClass.forName` calls
-  for the same class do not share one, and an object that resolved its own
-  runtime class holds it until released.
+  for the same class do not share one — use `jvm.classFor(name)`, which keeps a
+  single instance per class. An object that resolved its own runtime class holds
+  it until released.
+- **Some JDK APIs are caller-sensitive** and fail over JNI because there is no
+  Java frame to inspect. See the section above for the ones that matter and what
+  to call instead.
 - **No custom class loaders.** Classes come from the class path the VM was
-  created with.
+  created with. (The proxy machinery creates one for itself, to give each
+  isolate's handler class a distinct identity, but it loads nothing from it.)
 - **`JavaObject` does not auto-release.** Ownership is explicit; use
   `release()` or `localFrame`. There is no finalizer, because a `JNIEnv*` is
   thread-affine and a Dart finalizer offers no guarantee about which thread it

@@ -46,6 +46,24 @@ class JniLookupError extends JniError {
   String toString() => 'JniLookupError: $message';
 }
 
+/// One link in a [JavaException.causes] chain.
+class JavaCause {
+  const JavaCause(this.className, [this.message]);
+
+  /// Fully-qualified Java class name of the cause.
+  final String className;
+
+  /// The cause's `getMessage()`, or `null` when it carries none.
+  final String? message;
+
+  /// `true` when [className] matches, or is a subclass name ending in, [name].
+  bool isA(String name) => className == name || className.endsWith('.$name');
+
+  @override
+  String toString() =>
+      message == null || message!.isEmpty ? className : '$className: $message';
+}
+
 /// A Java throwable that crossed into Dart.
 ///
 /// The Java-side exception is always *cleared* before this is thrown: JNI
@@ -56,6 +74,7 @@ class JavaException implements Exception {
     required this.className,
     required this.message,
     this.stackTraceText,
+    this.causes = const [],
   });
 
   /// Fully-qualified Java class name, e.g. `java.lang.ArithmeticException`.
@@ -67,14 +86,41 @@ class JavaException implements Exception {
   /// The Java stack trace, when it could be captured.
   final String? stackTraceText;
 
+  /// The `getCause()` chain, outermost first. Empty when there is none.
+  ///
+  /// Worth reading before deciding what a failure *means*. Libraries routinely
+  /// rewrap — `catch (Exception e) { throw new Foo(e.getMessage(), e); }` — so
+  /// the class that identifies the problem is often not [className] but the
+  /// first or second link here. A connection timeout arriving as a
+  /// library-specific exception with `java.net.SocketTimeoutException` in its
+  /// cause is retryable; the same wrapper around a validation failure is not,
+  /// and only the chain tells them apart.
+  final List<JavaCause> causes;
+
   /// `true` when [className] matches, or is a subclass name ending in, [name].
   ///
   /// Accepts both `java.lang.IllegalStateException` and `IllegalStateException`
   /// so tests and call sites do not have to spell out the whole package.
   bool isA(String name) => className == name || className.endsWith('.$name');
 
+  /// `true` when [isA] holds for this exception or for any of its [causes].
+  bool isCausedBy(String name) =>
+      isA(name) || causes.any((cause) => cause.isA(name));
+
+  /// The first cause matching [name], or `null`.
+  JavaCause? causeOf(String name) {
+    for (final cause in causes) {
+      if (cause.isA(name)) return cause;
+    }
+    return null;
+  }
+
   @override
-  String toString() => message == null || message!.isEmpty
-      ? 'JavaException: $className'
-      : 'JavaException: $className: $message';
+  String toString() {
+    final head = message == null || message!.isEmpty
+        ? 'JavaException: $className'
+        : 'JavaException: $className: $message';
+    if (causes.isEmpty) return head;
+    return '$head\n${causes.map((c) => '  caused by: $c').join('\n')}';
+  }
 }

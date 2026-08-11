@@ -10,6 +10,7 @@ library;
 import 'dart:ffi';
 
 import 'errors.dart';
+import 'java_class.dart';
 import 'jni_slots.dart';
 import 'jvm.dart';
 import 'native_types.dart';
@@ -138,6 +139,91 @@ extension JvmLocalFrames on Jvm {
           .cast<NativeFunction<PopLocalFrameC>>()
           .asFunction<PopLocalFrameDart>()(popEnv, nullptr);
     }
+  }
+
+  /// Runs [body] inside a local frame and lets it **return one reference**,
+  /// which survives into the enclosing frame.
+  ///
+  /// This is [localFrame] for the case it cannot serve: building something worth
+  /// keeping. `PopLocalFrame` takes a result reference and hands back an
+  /// equivalent one owned by the outer frame, and that is what this uses — so the
+  /// returned [JavaRef] is a valid *local* reference of the caller's frame.
+  /// Promote it with [JavaRef.toGlobal] if it needs to outlive that too.
+  ///
+  /// Why it exists: returning a reference from [localFrame] compiles, runs, and
+  /// yields a **dangling handle** — the frame freed it on the way out. Nothing
+  /// reports it; the next use is undefined behaviour, which in practice means a
+  /// crash somewhere unrelated. The workaround is to call [JavaRef.toGlobal]
+  /// *inside* the body and return that, which every call site has to remember.
+  ///
+  /// ```dart
+  /// // A compiled report worth caching for the process.
+  /// final report = jvm.localFrameReturning(() {
+  ///   final design = loader.callJavaAs<JavaObject>('JasperDesign load(...)');
+  ///   return compiler.callJavaAs<JavaObject>('JasperReport compile(...)').ref;
+  /// }, capacity: 128).toGlobal();
+  /// ```
+  ///
+  /// [body] returning `null` is allowed and pops the frame with no result.
+  JavaRef? localFrameReturning(JavaRef? Function() body, {int capacity = 16}) {
+    final env = this.env;
+
+    final push = Jvm.fnSlotOf(
+      env,
+      JniFn.pushLocalFrame,
+    ).cast<NativeFunction<PushLocalFrameC>>().asFunction<PushLocalFrameDart>();
+    if (push(env, capacity) != JniResult.ok) {
+      checkException();
+      throw JniError('PushLocalFrame($capacity) failed');
+    }
+
+    JavaRef? result;
+    var popped = false;
+    try {
+      result = body();
+
+      final popEnv = this.env;
+      final promoted = Jvm.fnSlotOf(popEnv, JniFn.popLocalFrame)
+          .cast<NativeFunction<PopLocalFrameC>>()
+          .asFunction<PopLocalFrameDart>()(popEnv, result?.pointer ?? nullptr);
+      popped = true;
+
+      if (result == null || promoted == nullptr) return null;
+      return JavaRef(this, promoted, JavaRefKind.local);
+    } finally {
+      // `body` threw, or the pop itself did: the frame still has to go.
+      if (!popped) {
+        final popEnv = this.env;
+        Jvm.fnSlotOf(popEnv, JniFn.popLocalFrame)
+            .cast<NativeFunction<PopLocalFrameC>>()
+            .asFunction<PopLocalFrameDart>()(popEnv, nullptr);
+      }
+    }
+  }
+
+  /// [localFrameReturning] for the common case of building a [JavaObject].
+  ///
+  /// ```dart
+  /// final context = jvm.localFrameReturningObject(() {
+  ///   final ctx = contextClass.newJava('()');
+  ///   ctx.callJava('void setProperty(String, String)', ['k', 'v']);
+  ///   return ctx;
+  /// });
+  /// ```
+  ///
+  /// The result resolves its own [JavaObject.type] on demand rather than
+  /// inheriting the one [body] may have had. That is deliberate: a `JavaClass`
+  /// resolved inside the frame holds a frame-local reference of its own, so
+  /// carrying it out would hand back a class that is already dangling. Pass a
+  /// globally-held class explicitly if the member-id cache matters.
+  JavaObject? localFrameReturningObject(
+    JavaObject? Function() body, {
+    int capacity = 16,
+    JavaClass? type,
+  }) {
+    final ref = localFrameReturning(() => body()?.ref, capacity: capacity);
+    if (ref == null) return null;
+    return JavaObject(this, ref, type);
   }
 
   /// Hints the VM that [capacity] local references are about to be created.

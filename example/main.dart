@@ -37,6 +37,7 @@ void main() {
   _boxing(jvm);
   _exceptions(jvm);
   _references(jvm);
+  _proxies(jvm);
 }
 
 /// Constructors, instance methods, static methods, and the types they return.
@@ -370,4 +371,54 @@ void _references(Jvm jvm) {
   kept.release();
 
   print('\nSee performance.dart for what this costs in a hot loop.');
+}
+
+/// A Java interface implemented in Dart, driving the JDK's own sort.
+void _proxies(Jvm jvm) {
+  print('\n--- implementing a Java interface ---');
+
+  var compares = 0;
+  final byLength = jvm.implementInterface(
+    'java.util.Comparator',
+    onInvoke: (call) {
+      compares++;
+      // Both arguments are Java Strings, so they arrive as Dart Strings.
+      final a = call.args[0] as String;
+      final b = call.args[1] as String;
+      final byLength = a.length.compareTo(b.length);
+      return byLength != 0 ? byLength : a.compareTo(b);
+    },
+  );
+
+  try {
+    final words = JavaArray.ofStrings(jvm, [
+      'delta',
+      'a',
+      'charlie',
+      'be',
+      'echo',
+    ]);
+
+    jvm.classFor('java.util.Arrays').callJavaStatic(
+      'void sort(Object[], java.util.Comparator)',
+      [words, byLength.instance],
+    );
+
+    _show('sorted by length', words.toList());
+    _show('  compares made', compares);
+    // Java's own view of the proxy: no handler was given for toString.
+    _show(
+      '  the proxy is',
+      jvm.classFor('java.lang.String').callJavaStatic(
+        'String valueOf(Object)',
+        [byLength.instance],
+      ),
+    );
+
+    words.release();
+  } finally {
+    // Also releases the isolate: a live proxy holds it open, since a JVM thread
+    // could still queue a call to it.
+    byLength.release();
+  }
 }

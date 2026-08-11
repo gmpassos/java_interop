@@ -364,6 +364,387 @@ public class Fixtures {
         throw new FixtureException(message);
     }
 
+    /**
+     * Throws an exception wrapping two nested causes.
+     *
+     * <p>The shape libraries produce constantly — {@code catch (Exception e) {
+     * throw new Wrapper(e.getMessage(), e); }} — where the class that says what
+     * actually went wrong is not the one thrown but one further down the chain.
+     */
+    public static void throwWithCauses() {
+        Exception root = new java.io.IOException("no route to host");
+        Exception middle = new IllegalStateException("connect failed", root);
+        throw new FixtureException("operation failed", middle);
+    }
+
+    /** Throws an exception whose {@code getCause()} returns itself. */
+    public static void throwSelfCaused() {
+        throw new SelfCaused("loops back to itself");
+    }
+
+    /**
+     * Throws an exception nested deeper than the cause walk goes, so the depth
+     * bound is observable rather than assumed.
+     */
+    public static void throwDeeplyNested(int depth) {
+        Throwable cause = new IllegalArgumentException("bottom");
+        for (int i = 0; i < depth; i++) {
+            cause = new IllegalStateException("level " + i, cause);
+        }
+        throw new FixtureException("top", cause);
+    }
+
+    // --- Bytes -------------------------------------------------------------
+
+    /**
+     * Every byte value 0–255 in order, as Java sees them: signed, so the second
+     * half is negative.
+     *
+     * <p>The whole range matters because sign is where a byte conversion goes
+     * wrong, and it goes wrong quietly — 200 arriving as -56 still looks like a
+     * number.
+     */
+    public static byte[] allByteValues() {
+        byte[] bytes = new byte[256];
+        for (int i = 0; i < 256; i++) {
+            bytes[i] = (byte) i;
+        }
+        return bytes;
+    }
+
+    /** Sums a {@code byte[]} as unsigned, to check what Dart actually sent. */
+    public static int sumUnsignedBytes(byte[] bytes) {
+        int total = 0;
+        for (byte b : bytes) {
+            total += (b & 0xff);
+        }
+        return total;
+    }
+
+    /** An empty {@code byte[]}: the boundary case for region reads. */
+    public static byte[] noBytes() {
+        return new byte[0];
+    }
+
+    // --- Enums -------------------------------------------------------------
+
+    /** A three-constant enum, to check constant lookup and identity. */
+    public enum Flavour {
+        SWEET,
+        SOUR,
+        UMAMI;
+
+        public String describe() {
+            return "flavour:" + name();
+        }
+    }
+
+    /** Round-trips an enum constant, so identity is checkable from Dart. */
+    public static String describeFlavour(Flavour flavour) {
+        return flavour == null ? "none" : flavour.describe();
+    }
+
+    // --- Native callbacks --------------------------------------------------
+
+    /**
+     * Implemented in Dart and bound with {@code RegisterNatives}.
+     *
+     * <p>Declaring it {@code native} with no Java body is the whole point:
+     * calling it before Dart binds it throws {@code UnsatisfiedLinkError}, which
+     * makes "the binding did not happen" a distinguishable failure instead of a
+     * crash.
+     */
+    public static native int nativeDouble(int value);
+
+    /**
+     * Calls {@link #nativeDouble} from inside a Java frame.
+     *
+     * <p>The frame is the point. Invoking the native method directly from Dart
+     * would only prove the function pointer works; going Dart → Java → Dart
+     * proves the callback runs while a JNI call is already in flight on the same
+     * thread, which is the case every visitor, comparator and listener needs.
+     */
+    public static int callNativeDouble(int value) {
+        return nativeDouble(value);
+    }
+
+    /** Calls {@link #nativeDouble} in a loop, to check nothing accumulates. */
+    public static long sumNativeDouble(int count) {
+        long total = 0;
+        for (int i = 0; i < count; i++) {
+            total += nativeDouble(i);
+        }
+        return total;
+    }
+
+    /** Implemented in Dart; the return value decides the order below. */
+    public static native int nativeCompare(int a, int b);
+
+    /**
+     * Sorts with a comparator that compares in Dart.
+     *
+     * <p>Verifiable end to end: the JDK's own sort consumes the returned values,
+     * so a wrong or ignored return shows up as a wrong order rather than as a
+     * silent no-op.
+     */
+    public static int[] sortWithNativeComparator(int[] values) {
+        Integer[] boxed = new Integer[values.length];
+        for (int i = 0; i < values.length; i++) {
+            boxed[i] = values[i];
+        }
+        java.util.Arrays.sort(boxed, (a, b) -> nativeCompare(a, b));
+        int[] sorted = new int[boxed.length];
+        for (int i = 0; i < boxed.length; i++) {
+            sorted[i] = boxed[i];
+        }
+        return sorted;
+    }
+
+    /** Implemented in Dart; takes and returns a reference, not a primitive. */
+    public static native String nativeShout(String text);
+
+    /** Calls {@link #nativeShout} from a Java frame and appends a marker. */
+    public static String callNativeShout(String text) {
+        return nativeShout(text) + "!";
+    }
+
+    /** Calls a native method that a Dart handler is expected to throw from. */
+    public static native void nativeFail(String message);
+
+    /**
+     * Calls {@link #nativeFail} and reports what came back.
+     *
+     * <p>A Dart callback that throws has to surface in Java as a pending
+     * exception, or Java would carry on with a bogus return value.
+     */
+    public static String catchNativeFail(String message) {
+        try {
+            nativeFail(message);
+            return "no exception";
+        } catch (Throwable e) {
+            return e.getClass().getName() + ": " + e.getMessage();
+        }
+    }
+
+    /**
+     * Implemented in Dart as an *asynchronous* callback, so it returns before
+     * Dart has run anything.
+     *
+     * <p>Takes a {@code long} and nothing else on purpose: an asynchronous
+     * callback is handled after this frame is gone, so any reference passed here
+     * would already be dead. A number that indexes a Java-side holder survives;
+     * a {@code jobject} does not.
+     */
+    public static native void nativePost(long callId);
+
+    /** Calls {@link #nativePost} from a JVM-owned thread and waits for it. */
+    public static void postFromNewThread(long callId)
+            throws InterruptedException {
+        Thread thread = new Thread(() -> nativePost(callId), "fixtures-poster");
+        thread.start();
+        thread.join();
+    }
+
+    /**
+     * Identifies the calling thread as the JVM sees it.
+     *
+     * <p>A Dart isolate is not pinned to an OS thread: it runs on a thread from a
+     * pool and may resume on a different one after an {@code await}. JNI attaches
+     * whatever thread calls in, so a different OS thread means a different
+     * {@code java.lang.Thread} — which is what a proxy has to compare against to
+     * tell a reentrant callback from a foreign-thread one.
+     */
+    public static String currentThreadName() {
+        Thread thread = Thread.currentThread();
+        return thread.getName() + "#" + System.identityHashCode(thread);
+    }
+
+    /** Runs {@link #callNativeDouble} on a fresh JVM-owned thread. */
+    public static int callNativeDoubleOnNewThread(int value)
+            throws InterruptedException {
+        final int[] result = {-1};
+        final Throwable[] failure = {null};
+        Thread thread = new Thread(() -> {
+            try {
+                result[0] = callNativeDouble(value);
+            } catch (Throwable e) {
+                failure[0] = e;
+            }
+        }, "fixtures-native-caller");
+        thread.start();
+        thread.join();
+        if (failure[0] != null) {
+            throw new FixtureException(
+                    "callback from a foreign thread failed: " + failure[0], failure[0]);
+        }
+        return result[0];
+    }
+
+    // --- Proxies -----------------------------------------------------------
+
+    /** Runs [runnable] here and now, on the caller's thread. */
+    public static void run(Runnable runnable) {
+        runnable.run();
+    }
+
+    /** Runs [runnable] and reports what it threw, if anything. */
+    public static String runCatching(Runnable runnable) {
+        try {
+            runnable.run();
+            return "no exception";
+        } catch (Throwable e) {
+            return e.getClass().getName() + ": " + e.getMessage();
+        }
+    }
+
+    /** Runs [runnable] on a JVM-owned thread and waits for that thread. */
+    public static void runOnNewThread(Runnable runnable)
+            throws InterruptedException {
+        Thread thread = new Thread(runnable, "fixtures-runner");
+        thread.start();
+        thread.join();
+    }
+
+    /**
+     * Compares on a JVM-owned thread and reports the outcome as text.
+     *
+     * <p>The interesting answer is the failure: a comparator implemented in Dart
+     * cannot answer from a thread the JVM owns, and has to say so rather than
+     * block.
+     */
+    public static String compareOnNewThread(
+            java.util.Comparator<Object> comparator, Object a, Object b)
+            throws InterruptedException {
+        final String[] outcome = {"nothing happened"};
+        Thread thread = new Thread(() -> {
+            try {
+                outcome[0] = "compared: " + comparator.compare(a, b);
+            } catch (Throwable e) {
+                outcome[0] = e.getClass().getName() + ": " + e.getMessage();
+            }
+        }, "fixtures-comparer");
+        thread.start();
+        thread.join();
+        return outcome[0];
+    }
+
+    /**
+     * One method per return type, so a proxy's coercion is checked at every
+     * width.
+     *
+     * <p>Dart has one integer type and one float type, so a handler returning
+     * {@code 1} cannot say whether it means a {@code byte} or a {@code long};
+     * the declared type has to decide.
+     */
+    public interface Widths {
+        boolean asBoolean();
+
+        byte asByte();
+
+        char asChar();
+
+        short asShort();
+
+        int asInt();
+
+        long asLong();
+
+        float asFloat();
+
+        double asDouble();
+
+        String asString();
+
+        Object asObject();
+    }
+
+    /** Calls every method of [widths] and reports the values Java received. */
+    public static String describeWidths(Widths widths) {
+        return widths.asBoolean()
+                + "," + widths.asByte()
+                + "," + widths.asChar()
+                + "," + widths.asShort()
+                + "," + widths.asInt()
+                + "," + widths.asLong()
+                + "," + widths.asFloat()
+                + "," + widths.asDouble()
+                + "," + widths.asString()
+                + "," + widths.asObject();
+    }
+
+    /** Where {@link #hold} parks a proxy so Java outlives Dart's handle to it. */
+    private static Runnable held;
+
+    /**
+     * Keeps a reference to [runnable] on the Java side.
+     *
+     * <p>The way to reach the case that matters for lifetime: Dart releases its
+     * proxy while a Java library is still holding the object. Calling it then has
+     * to fail in Java, not jump into freed code.
+     */
+    public static void hold(Runnable runnable) {
+        held = runnable;
+    }
+
+    /** Runs whatever {@link #hold} parked, reporting what it threw. */
+    public static String runHeld() {
+        return runCatching(held);
+    }
+
+    /**
+     * Runs whatever {@link #hold} parked, on a JVM-owned thread.
+     *
+     * <p>The combination that has no good answer: a proxy Dart has released,
+     * called from a thread Dart does not own. The call can only be queued, and by
+     * the time Dart looks at it there is neither a handler to run it nor anyone
+     * to report to.
+     */
+    public static String runHeldOnNewThread() throws InterruptedException {
+        final String[] outcome = {"nothing happened"};
+        Thread thread = new Thread(
+                () -> outcome[0] = runCatching(held), "fixtures-held-runner");
+        thread.start();
+        thread.join();
+        return outcome[0];
+    }
+
+    /** {@code String.valueOf(value)}, i.e. its {@code toString}. */
+    public static String textOf(Object value) {
+        return String.valueOf(value);
+    }
+
+    /** {@code value.hashCode()}. */
+    public static int hashOf(Object value) {
+        return value.hashCode();
+    }
+
+    /** {@code a.equals(b)}. */
+    public static boolean equalsOf(Object a, Object b) {
+        return a.equals(b);
+    }
+
+    /**
+     * Round-trips [value] through a {@link java.util.HashSet}.
+     *
+     * <p>Both a hash and an equality check, which is where a proxy with no
+     * defaults for the {@code Object} methods falls over.
+     */
+    public static boolean survivesAHashSet(Object value) {
+        java.util.Set<Object> set = new java.util.HashSet<>();
+        set.add(value);
+        return set.contains(value);
+    }
+
+    /** Calls {@code compare} [count] times, to measure a proxy under load. */
+    public static int compareRepeatedly(
+            java.util.Comparator<Object> comparator, Object a, Object b, int count) {
+        int last = 0;
+        for (int i = 0; i < count; i++) {
+            last = comparator.compare(a, b);
+        }
+        return last;
+    }
+
     /** A nested class, to check the {@code $} naming rule. */
     public static class Nested {
         public static String hello() {
@@ -377,6 +758,29 @@ public class Fixtures {
 
         public FixtureException(String message) {
             super(message);
+        }
+
+        public FixtureException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
+    /**
+     * A throwable that returns itself from {@code getCause()}.
+     *
+     * <p>{@code initCause} forbids this, but overriding the getter does not, so a
+     * cause walk that only counts depth would still spin here.
+     */
+    public static class SelfCaused extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        public SelfCaused(String message) {
+            super(message);
+        }
+
+        @Override
+        public synchronized Throwable getCause() {
+            return this;
         }
     }
 }

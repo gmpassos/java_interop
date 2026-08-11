@@ -72,7 +72,10 @@ T autoRelease<T extends JavaRef>(T ref) {
 }
 
 /// Registers [object] for release at the end of the test.
-JavaObject autoReleaseObject(JavaObject object) {
+///
+/// Generic so a [JavaArray] stays a `JavaArray`: erasing it to [JavaObject]
+/// would hide the array-only members at every call site.
+T autoReleaseObject<T extends JavaObject>(T object) {
   addTearDown(object.release);
   return object;
 }
