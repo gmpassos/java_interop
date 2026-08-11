@@ -126,7 +126,7 @@ does not expose).
   Java's other threads read.
 - **An escape hatch.** `Jvm.fnSlot(index)` reaches any JNI function this binding
   does not wrap.
-- **Tested.** 462 tests across unit and integration suites, covering every
+- **Tested.** 467 tests across unit and integration suites, covering every
   primitive type, both directions of every conversion, arrays and boxing,
   signature parsing, the reference lifecycle, the exception paths including cause
   chains and cycles, proxies across threads and isolates, and the multi-isolate

@@ -193,6 +193,79 @@ void main() {
       expect(outcome, 'java.lang.IllegalStateException: from the handler');
     });
 
+    /// Reporting a Dart failure to Java must not become a second, worse
+    /// failure. A [JavaException] is re-thrown as its own class where possible —
+    /// but nothing guarantees that class is findable, and if `ThrowNew` were
+    /// left to fail here, Java would carry on with a null return and no pending
+    /// exception.
+    test('an unfindable exception class falls back to RuntimeException', () {
+      final proxy = testJvm.implementInterface(
+        'java.lang.Runnable',
+        handlers: {
+          'run': (call) => throw JavaException(
+            className: 'com.example.NotOnAnyClassPath',
+            message: 'thrown by the handler',
+          ),
+        },
+      );
+      addTearDown(proxy.release);
+
+      final outcome = fixturesClass().callJavaStatic(
+        'String runCatching(Runnable)',
+        [proxy.instance],
+      );
+
+      expect(outcome, startsWith('java.lang.RuntimeException:'));
+      expect(outcome, contains('com.example.NotOnAnyClassPath'));
+    });
+
+    test('a proxy and a call describe themselves', () {
+      String? described;
+      final proxy = testJvm.implementInterfaces(
+        ['java.lang.Runnable', 'java.util.Comparator'],
+        onInvoke: (call) {
+          described = call.toString();
+          return 0;
+        },
+      );
+
+      expect(
+        proxy.toString(),
+        'JavaProxy(java.lang.Runnable, java.util.Comparator)',
+      );
+
+      fixturesClass().callJavaStatic(
+        'int compareRepeatedly(java.util.Comparator, Object, Object, int)',
+        [proxy.instance, 1, 2, 1],
+      );
+
+      expect(described, 'JavaProxyCall(compare, 2 args)');
+
+      proxy.release();
+      expect(proxy.toString(), endsWith(', released)'));
+    });
+
+    test('a queued call says so in its description', () async {
+      String? described;
+      final proxy = testJvm.implementInterface(
+        'java.lang.Runnable',
+        handlers: {
+          'run': (call) {
+            described = call.toString();
+            return null;
+          },
+        },
+      );
+      addTearDown(proxy.release);
+
+      fixturesClass().callJavaStatic('void runOnNewThread(Runnable)', [
+        proxy.instance,
+      ]);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(described, 'JavaProxyCall(run, 0 args, queued)');
+    });
+
     test('toString, equals and hashCode work with no handler for them', () {
       final proxy = testJvm.implementInterface(
         'java.util.Comparator',

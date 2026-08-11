@@ -100,6 +100,51 @@ void main() {
     });
   }, skip: skipWithoutJdk);
 
+  /// The pair underneath [JvmMonitors.synchronized], used directly.
+  ///
+  /// Worth its own coverage because the balance is the caller's problem here:
+  /// [JvmMonitors.synchronized] exists so that it usually is not.
+  group('monitorEnter and monitorExit', () {
+    test('enter and exit pair up, and nest', () {
+      final target = autoReleaseObject(
+        testJvm.classFor('java.lang.Object').newJava('()'),
+      );
+
+      testJvm.monitorEnter(target.ref);
+      testJvm.monitorEnter(target.ref);
+      expect(() => testJvm.monitorExit(target.ref), returnsNormally);
+      expect(() => testJvm.monitorExit(target.ref), returnsNormally);
+
+      // Free again, which it would not be if the counts had not balanced.
+      expect(testJvm.synchronized(target, () => 'free'), 'free');
+    });
+
+    test('a null reference is refused by both', () {
+      final nothing = JavaRef(testJvm, nullptr, JavaRefKind.local);
+
+      expect(
+        () => testJvm.monitorEnter(nothing),
+        throwsA(
+          isA<JniError>().having(
+            (e) => e.message,
+            'message',
+            contains('enter the monitor of a null reference'),
+          ),
+        ),
+      );
+      expect(
+        () => testJvm.monitorExit(nothing),
+        throwsA(
+          isA<JniError>().having(
+            (e) => e.message,
+            'message',
+            contains('exit the monitor of a null reference'),
+          ),
+        ),
+      );
+    });
+  }, skip: skipWithoutJdk);
+
   group('refTypeOf', () {
     test('tells a local from a global', () {
       final local = autoRelease(testJvm.findClass('java.lang.Object'));
