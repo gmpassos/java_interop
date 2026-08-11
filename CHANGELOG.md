@@ -113,7 +113,7 @@ the process.
 
 ### Tests
 
-462, up from 366 in 1.2.0. The ones worth naming, because they cover failures
+467, up from 366 in 1.2.0. The ones worth naming, because they cover failures
 that abort the process instead of throwing — a regression there shows up as a
 dead test runner, not a red test:
 
