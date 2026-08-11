@@ -162,6 +162,9 @@ extension JvmArrays on Jvm {
   }
 
   /// Reads a `byte[]`. Java bytes are signed, so this is an [Int8List].
+  ///
+  /// For binary data — a file, a hash, a PDF — [getUnsignedByteArray] is almost
+  /// always what you want instead.
   Int8List getByteArray(JavaRef array, {int start = 0, int? length}) {
     final count = _regionLength(array, start, length);
     if (count == 0) return Int8List(0);
@@ -169,6 +172,27 @@ extension JvmArrays on Jvm {
       final buffer = arena<Int8>(count);
       _region(JniFn.getByteArrayRegion, array, start, count, buffer.cast());
       return Int8List.fromList(buffer.asTypedList(count));
+    });
+  }
+
+  /// Reads a `byte[]` as unsigned bytes.
+  ///
+  /// The same eight bits as [getByteArray], read straight into a [Uint8List] —
+  /// which is what the rest of Dart wants for binary data: `dart:io` writes it,
+  /// `dart:convert` decodes it, `crypto` digests it.
+  ///
+  /// Prefer this over converting afterwards. `getByteArray(...).map((b) => b &
+  /// 0xff)` is the obvious move and it both allocates per element and produces a
+  /// plain `List<int>` rather than a typed list; on a few hundred kilobytes that
+  /// is a measurable waste. Reading the region into the right buffer costs the
+  /// single copy JNI requires either way.
+  Uint8List getUnsignedByteArray(JavaRef array, {int start = 0, int? length}) {
+    final count = _regionLength(array, start, length);
+    if (count == 0) return Uint8List(0);
+    return using((arena) {
+      final buffer = arena<Uint8>(count);
+      _region(JniFn.getByteArrayRegion, array, start, count, buffer.cast());
+      return Uint8List.fromList(buffer.asTypedList(count));
     });
   }
 

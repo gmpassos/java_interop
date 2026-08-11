@@ -28,7 +28,7 @@ import 'native_types.dart';
 /// access through `GetEnv`, attaching the current thread when needed, which is
 /// a cheap thread-local read in the VM.
 class Jvm {
-  Jvm._(this.vm, this.classPath, this.options);
+  Jvm._(this.vm, this.classPath, this.options, {required this.created});
 
   /// The `JavaVM*` handle. Process-wide and shared by every isolate.
   final Pointer<Void> vm;
@@ -36,12 +36,27 @@ class Jvm {
   /// The class path this VM was created with.
   ///
   /// Empty when this isolate attached to a VM that some other isolate created,
-  /// because JNI offers no way to read it back.
+  /// because JNI offers no way to read it back. Use [isAttached] to tell that
+  /// case from a VM genuinely created with an empty class path.
   final List<String> classPath;
 
   /// The extra VM options this VM was created with (same caveat as
   /// [classPath]).
   final List<String> options;
+
+  /// `true` when this call created the VM, `false` when it attached to one that
+  /// already existed.
+  ///
+  /// Worth checking whenever the class path matters. JNI cannot extend a running
+  /// VM's class path, so if something else in the process booted the VM first,
+  /// the [classPath] passed to [startOrAttach] was silently ignored and the
+  /// classes it named are not there. Finding that out here is the difference
+  /// between a clear failure at startup and a `NoClassDefFoundError` from deep
+  /// inside a library much later.
+  final bool created;
+
+  /// `true` when this isolate attached to a pre-existing VM. See [created].
+  bool get isAttached => !created;
 
   static Jvm? _instance;
 
@@ -79,7 +94,12 @@ class Jvm {
 
     final alreadyCreated = _findCreatedVm(library);
     if (alreadyCreated != null) {
-      return _instance = Jvm._(alreadyCreated, const [], const []);
+      return _instance = Jvm._(
+        alreadyCreated,
+        const [],
+        const [],
+        created: false,
+      );
     }
 
     return _instance = _create(library, classPath, vmOptions);
@@ -194,7 +214,9 @@ class Jvm {
         // wait for the winner to finish rather than failing a caller who did
         // nothing wrong.
         final raced = _awaitCreatedVm(library);
-        if (raced != null) return Jvm._(raced, const [], const []);
+        if (raced != null) {
+          return Jvm._(raced, const [], const [], created: false);
+        }
 
         throw JniError(
           'JNI_CreateJavaVM failed: JNI_EEXIST, and the existing '
@@ -210,6 +232,7 @@ class Jvm {
         pvm.value,
         List.unmodifiable(classPath),
         List.unmodifiable(vmOptions),
+        created: true,
       );
     });
   }
@@ -373,6 +396,7 @@ class Jvm {
     var className = 'java.lang.Throwable';
     String? message;
     String? stackTraceText;
+    var causes = const <JavaCause>[];
 
     try {
       final throwableClass = _rawFindClass(envPointer, 'java/lang/Throwable');
@@ -397,15 +421,9 @@ class Jvm {
         '()Ljava/lang/String;',
       );
 
-      if (getClass != nullptr && getName != nullptr) {
-        final actualClass = _rawCallObject(envPointer, throwable, getClass);
-        if (actualClass != nullptr) {
-          final nameString = _rawCallObject(envPointer, actualClass, getName);
-          className = _rawStringFrom(envPointer, nameString) ?? className;
-          _rawDeleteLocalRef(envPointer, nameString);
-          _rawDeleteLocalRef(envPointer, actualClass);
-        }
-      }
+      className =
+          _rawClassNameOf(envPointer, throwable, getClass, getName) ??
+          className;
 
       if (getMessage != nullptr) {
         final messageString = _rawCallObject(envPointer, throwable, getMessage);
@@ -414,6 +432,15 @@ class Jvm {
       }
 
       stackTraceText = _rawStackTrace(envPointer, throwable, throwableClass);
+
+      causes = _rawCauses(
+        envPointer,
+        throwable,
+        throwableClass,
+        getClass,
+        getName,
+        getMessage,
+      );
 
       _rawDeleteLocalRef(envPointer, classClass);
       _rawDeleteLocalRef(envPointer, throwableClass);
@@ -428,7 +455,99 @@ class Jvm {
       className: className,
       message: message,
       stackTraceText: stackTraceText,
+      causes: causes,
     );
+  }
+
+  /// How far [_rawCauses] follows `getCause()`.
+  ///
+  /// A bound rather than a limit anyone should hit: real chains are two or three
+  /// deep. It is what keeps a self-referential or cyclic chain — which
+  /// `initCause` forbids but `Throwable` subclasses can still build by
+  /// overriding `getCause()` — from spinning here while an exception is pending.
+  static const _maxCauseDepth = 8;
+
+  /// Walks the `getCause()` chain, outermost first.
+  ///
+  /// Uses only the raw helpers, because this runs while describing a throwable
+  /// that has already been cleared: any checked call would re-enter
+  /// [checkException].
+  List<JavaCause> _rawCauses(
+    Pointer<Void> envPointer,
+    Pointer<Void> throwable,
+    Pointer<Void> throwableClass,
+    Pointer<Void> getClass,
+    Pointer<Void> getName,
+    Pointer<Void> getMessage,
+  ) {
+    final getCause = _rawMethodId(
+      envPointer,
+      throwableClass,
+      'getCause',
+      '()Ljava/lang/Throwable;',
+    );
+    if (getCause == nullptr) return const [];
+
+    final causes = <JavaCause>[];
+    final seen = <Pointer<Void>>[throwable];
+    var current = throwable;
+
+    try {
+      for (var depth = 0; depth < _maxCauseDepth; depth++) {
+        final cause = _rawCallObject(envPointer, current, getCause);
+        if (cause == nullptr) break;
+
+        // A throwable whose cause is itself, or an earlier link, is a cycle.
+        if (seen.any((other) => _rawIsSameObject(envPointer, other, cause))) {
+          _rawDeleteLocalRef(envPointer, cause);
+          break;
+        }
+
+        final causeClass =
+            _rawClassNameOf(envPointer, cause, getClass, getName) ??
+            'java.lang.Throwable';
+
+        String? causeMessage;
+        if (getMessage != nullptr) {
+          final messageString = _rawCallObject(envPointer, cause, getMessage);
+          causeMessage = _rawStringFrom(envPointer, messageString);
+          _rawDeleteLocalRef(envPointer, messageString);
+        }
+
+        causes.add(JavaCause(causeClass, causeMessage));
+        seen.add(cause);
+        current = cause;
+      }
+    } on Object {
+      // Keep whatever was gathered.
+    } finally {
+      // `seen[0]` is the throwable itself, owned by the caller.
+      for (var i = 1; i < seen.length; i++) {
+        _rawDeleteLocalRef(envPointer, seen[i]);
+      }
+    }
+
+    return causes;
+  }
+
+  /// `object.getClass().getName()`, or `null` when either call fails.
+  String? _rawClassNameOf(
+    Pointer<Void> envPointer,
+    Pointer<Void> object,
+    Pointer<Void> getClass,
+    Pointer<Void> getName,
+  ) {
+    if (getClass == nullptr || getName == nullptr) return null;
+
+    final actualClass = _rawCallObject(envPointer, object, getClass);
+    if (actualClass == nullptr) return null;
+
+    final nameString = _rawCallObject(envPointer, actualClass, getName);
+    final name = _rawStringFrom(envPointer, nameString);
+
+    _rawDeleteLocalRef(envPointer, nameString);
+    _rawDeleteLocalRef(envPointer, actualClass);
+    return name;
   }
 
   /// `throwable.printStackTrace(new PrintWriter(new StringWriter()))`.
@@ -604,6 +723,18 @@ class Jvm {
     fnSlotOf(envPointer, JniFn.deleteLocalRef)
         .cast<NativeFunction<DeleteRefC>>()
         .asFunction<DeleteRefDart>()(envPointer, reference);
+  }
+
+  bool _rawIsSameObject(
+    Pointer<Void> envPointer,
+    Pointer<Void> a,
+    Pointer<Void> b,
+  ) {
+    final fn = fnSlotOf(
+      envPointer,
+      JniFn.isSameObject,
+    ).cast<NativeFunction<IsSameObjectC>>().asFunction<IsSameObjectDart>();
+    return fn(envPointer, a, b) != 0;
   }
 
   void _rawClearException(Pointer<Void> envPointer) {

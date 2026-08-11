@@ -9,7 +9,10 @@
 /// It is a [JavaObject], so it can be passed straight back into another call.
 library;
 
+import 'dart:typed_data';
+
 import 'boxing.dart';
+import 'errors.dart';
 import 'java_class.dart';
 import 'java_ref.dart';
 import 'jvm.dart';
@@ -110,6 +113,29 @@ class JavaArray extends JavaObject {
 
   /// `true` when the elements are one of the eight primitives.
   bool get hasPrimitiveElements => JniType.isPrimitive(elementDescriptor);
+
+  /// Copies a `byte[]` into a [Uint8List].
+  ///
+  /// The right way to get binary data out of Java. `toList()` on a `byte[]`
+  /// gives an [Int8List], because Java's `byte` is signed — correct, but every
+  /// consumer in Dart (`File.writeAsBytes`, `utf8.decode`, `crypto`) wants
+  /// unsigned bytes, and converting afterwards allocates per element.
+  ///
+  /// ```dart
+  /// final digest = md5.callJavaAs<JavaArray>('byte[] digest(byte[])', [input]);
+  /// await File('out.bin').writeAsBytes(digest.toBytes());
+  /// ```
+  ///
+  /// Throws [JniError] unless the elements really are `byte`.
+  Uint8List toBytes({int start = 0, int? length}) {
+    if (elementDescriptor != JniType.byte) {
+      throw JniError(
+        'toBytes() needs a byte[], got $descriptor — '
+        'use toList() for other element types',
+      );
+    }
+    return jvm.getUnsignedByteArray(ref, start: start, length: length);
+  }
 
   /// Copies the array into Dart.
   ///

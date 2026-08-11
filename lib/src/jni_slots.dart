@@ -16,6 +16,7 @@ library;
 /// Slots in `struct JNINativeInterface_`, reached through `JNIEnv*`.
 abstract final class JniFn {
   static const getVersion = 4;
+  static const defineClass = 5;
   static const findClass = 6;
 
   static const getSuperclass = 10;
@@ -151,8 +152,13 @@ abstract final class JniFn {
   static const setFloatArrayRegion = 213;
   static const setDoubleArrayRegion = 214;
 
+  static const registerNatives = 215;
+  static const unregisterNatives = 216;
+  static const monitorEnter = 217;
+  static const monitorExit = 218;
   static const getJavaVm = 219;
   static const exceptionCheck = 228;
+  static const getObjectRefType = 232;
 }
 
 /// Slots in `struct JNIInvokeInterface_`, reached through `JavaVM*`.

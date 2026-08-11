@@ -11,5 +11,9 @@ build/
 coverage/
 doc/api/
 
+# IDE
+*.iml
+.idea/
+
 # macOS
 .DS_Store

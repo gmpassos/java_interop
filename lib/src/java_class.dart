@@ -150,8 +150,63 @@ class JavaClass {
   /// clazz.newJava('(String, int)', ['demo', 7]);
   /// clazz.newJava('void (String)', ['Dart']);   // the same thing
   /// ```
-  JavaObject newJava(String declaration, [List<Object?> args = const []]) =>
-      newInstance(JavaMethod.parse(declaration).descriptor, args);
+  ///
+  /// A constructor declaration is **only the parameter list** — no name, no
+  /// return type, because the class implies both. Writing the class name in
+  /// front, the way Java source does, is the natural mistake:
+  ///
+  /// ```dart
+  /// clazz.newJava('ByteArrayInputStream(byte[])', [bytes]);  // wrong
+  /// clazz.newJava('(byte[])', [bytes]);                      // right
+  /// ```
+  ///
+  /// The wrong form parses cleanly — as a *method* returning
+  /// `ByteArrayInputStream` — so without the check below it fails as
+  /// `no such method: <init>([B)Ljava/lang/ByteArrayInputStream;`, which points
+  /// at the constructor instead of at the declaration that was actually wrong.
+  /// The name is accepted when it does match this class, since then the intent
+  /// is unambiguous.
+  JavaObject newJava(String declaration, [List<Object?> args = const []]) {
+    final method = JavaMethod.parse(declaration);
+    final returns = method.signature.returns.descriptor;
+
+    if (returns == JniType.void_) {
+      return newInstance(method.descriptor, args);
+    }
+
+    if (!_returnsThisClass(returns)) {
+      throw JniError(
+        'not a constructor declaration: `$declaration`. A constructor is only '
+        'its parameter list, with no name and no return type — write '
+        '`(${_parameterListOf(declaration)})`.',
+      );
+    }
+
+    return newInstance(JSig.ctor(method.signature.parameters).descriptor, args);
+  }
+
+  /// `true` when [returns] names this class, by full or simple name.
+  ///
+  /// Compares simple names too because the declaration may spell the class
+  /// unqualified (`Greeter(String)`) while [name] is fully qualified.
+  bool _returnsThisClass(String returns) {
+    if (returns == JniType.objectOf(name)) return true;
+    return _simpleNameOf(returns) == _simpleNameOf(JniType.objectOf(name));
+  }
+
+  static String _simpleNameOf(String descriptor) {
+    final trimmed = descriptor.replaceAll(';', '');
+    final slash = trimmed.lastIndexOf('/');
+    return slash < 0 ? trimmed : trimmed.substring(slash + 1);
+  }
+
+  /// The text between the outermost parentheses, for the error message.
+  static String _parameterListOf(String declaration) {
+    final open = declaration.indexOf('(');
+    final close = declaration.lastIndexOf(')');
+    if (open < 0 || close <= open) return '';
+    return declaration.substring(open + 1, close).trim();
+  }
 
   /// Reads a static field named by a Java [declaration]:
   ///
@@ -167,6 +222,36 @@ class JavaClass {
   void setJavaStaticField(String declaration, Object? value) {
     final field = JavaField.parse(declaration);
     setStaticField(field.name, field.descriptor, value);
+  }
+
+  /// Reads the enum constant [constant] of this class, as a **global**
+  /// reference.
+  ///
+  /// An enum constant is a static field whose type is the enum itself, so
+  /// [getJavaStaticField] can read it — but what comes back is a *local*
+  /// reference, and an enum constant is exactly the kind of value worth keeping:
+  /// there are finitely many, they never change, and they are passed as
+  /// arguments over and over. Reading it fresh each time, or worse holding the
+  /// local past its frame, is the mistake this avoids.
+  ///
+  /// ```dart
+  /// final utc = jvm.classFor('java.time.ZoneOffset').enumConstant('UTC');
+  /// // ... use it for the life of the process ...
+  /// utc.release();
+  /// ```
+  ///
+  /// The caller owns the result and should [JavaObject.release] it when done —
+  /// usually never, for a constant held in a lookup table.
+  ///
+  /// Throws [JniError] when the field is missing or is not of this enum's type.
+  JavaObject enumConstant(String constant) {
+    final value = getStaticField(constant, JniType.objectOf(name));
+    if (value is! JavaObject || value.isNull) {
+      throw JniError('no enum constant $name.$constant');
+    }
+    final global = JavaObject(jvm, value.ref.toGlobal(), this);
+    value.release();
+    return global;
   }
 
   /// Reads a static field. [descriptor] is a *type* descriptor, e.g. `I`.
