@@ -614,6 +614,15 @@ thread — it can resume on a different one after an `await` — so this binding
 never caches it. `Jvm.env` calls `GetEnv` on every access (a thread-local read
 in the VM) and falls back to `AttachCurrentThread` when the thread is new.
 
+A thread attached that way also gets a **context class loader**. JNI leaves it
+null, while the thread that created the VM gets the application loader — so
+anything that discovers implementations through it (`ServiceLoader`, JAXB, StAX,
+JAXP, or any library calling `getResources` on it) would behave differently
+depending on which thread happened to serve the call, and an isolate can resume
+on any of them. `Jvm.env` fills a *null* loader with
+`ClassLoader.getSystemClassLoader()`, which is the loader built from the class
+path you passed; a loader set deliberately on the thread is left alone.
+
 ### The startup race
 
 HotSpot rejects a second `JNI_CreateJavaVM` with `JNI_EEXIST` as soon as the

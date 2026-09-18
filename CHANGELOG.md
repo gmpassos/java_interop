@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.4.1
+
+A thread this binding attaches now gets a context class loader.
+
+`AttachCurrentThread` leaves the new `java.lang.Thread` with a **null** context
+class loader, while the thread that created the VM gets the application one.
+Everything that discovers implementations through that loader — `ServiceLoader`,
+JAXB, StAX, JAXP, or any library that simply calls `getResources` on it — then
+behaves differently depending on which thread served the call. And since a Dart
+isolate is not pinned to an OS thread, which thread that is varies from call to
+call.
+
+That is the worst shape a defect can take. It cost a real investigation: Axis2
+dereferences the context loader unguarded while scanning the class path for
+modules, so a SOAP call served on an attached thread logged
+
+```
+SEVERE: Error occurred while loading modules from classpath
+java.lang.NullPointerException
+```
+
+while the same call on the VM's own thread logged nothing.
+
+`Jvm.env` now fills a *null* context class loader with
+`ClassLoader.getSystemClassLoader()` — the loader built from the class path
+given to `startOrAttach`, which is what the creating thread already has. A
+loader set deliberately on the thread is left untouched: this is a default, not
+a policy.
+
+It is raw JNI inside `env` (the higher-level API would read `env` while it is
+still being resolved), it never throws, and it never leaves an exception
+pending — a thread without a context class loader is worse than one with, but
+failing the attach over it would be worse still.
+
+The regression test runs in its own process
+(`test/integration/context_class_loader_test.dart`): inside the suite the
+isolate may have attached long before the test, and what is under test is what
+an attach leaves behind on a *fresh* thread.
+
 ## 1.4.0
 
 Java interfaces can be implemented in Dart. This was the one capability gap: a
