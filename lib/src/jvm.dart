@@ -241,6 +241,9 @@ class Jvm {
   ///
   /// Never cache the result across an `await`: the isolate may resume on a
   /// different OS thread, and a `JNIEnv*` from another thread is invalid.
+  ///
+  /// A thread attached here is also given a context class loader; see
+  /// [_ensureContextClassLoader].
   Pointer<Void> get env {
     final getEnv = _vmSlot(
       JniVmFn.getEnv,
@@ -264,11 +267,112 @@ class Jvm {
             '${JniResult.describe(attachRc)}',
           );
         }
+        _ensureContextClassLoader(penv.value);
         return penv.value;
       }
 
       throw JniError('GetEnv failed: ${JniResult.describe(rc)}');
     });
+  }
+
+  /// Gives a thread this binding just attached the system class loader as its
+  /// context class loader.
+  ///
+  /// `AttachCurrentThread` hands the new `java.lang.Thread` a **null** context
+  /// class loader, while the thread that created the VM gets the application
+  /// one. Everything that discovers implementations through the context loader
+  /// — `ServiceLoader`, JAXB, StAX, JAXP, and anything that calls
+  /// `getResources` on it — then behaves differently depending on *which*
+  /// thread served the call. Because a Dart isolate can resume on any thread of
+  /// the pool, that difference is intermittent, which is the worst way to find
+  /// it: Axis2, for one, dereferences the loader unguarded and logs a
+  /// `NullPointerException` over it on some calls and not others.
+  ///
+  /// Only a *null* loader is filled in. A loader set deliberately on this
+  /// thread — including by the JVM, on the thread that created it — is left
+  /// alone; this is a default, not a policy.
+  ///
+  /// Raw JNI throughout, because the higher-level API reads [env], which is
+  /// still being resolved here. It never throws and never leaves an exception
+  /// pending: a thread without a context class loader is worse than one with,
+  /// but failing the attach over it would be worse still.
+  void _ensureContextClassLoader(Pointer<Void> envPointer) {
+    var thread = nullptr as Pointer<Void>;
+    var threadClass = nullptr as Pointer<Void>;
+    var loaderClass = nullptr as Pointer<Void>;
+    var loader = nullptr as Pointer<Void>;
+
+    try {
+      threadClass = _rawFindClass(envPointer, 'java/lang/Thread');
+      if (threadClass == nullptr) return;
+
+      final currentThread = _rawStaticMethodId(
+        envPointer,
+        threadClass,
+        'currentThread',
+        '()Ljava/lang/Thread;',
+      );
+      final getContextClassLoader = _rawMethodId(
+        envPointer,
+        threadClass,
+        'getContextClassLoader',
+        '()Ljava/lang/ClassLoader;',
+      );
+      final setContextClassLoader = _rawMethodId(
+        envPointer,
+        threadClass,
+        'setContextClassLoader',
+        '(Ljava/lang/ClassLoader;)V',
+      );
+      if (currentThread == nullptr ||
+          getContextClassLoader == nullptr ||
+          setContextClassLoader == nullptr) {
+        return;
+      }
+
+      thread = _rawCallStaticObject(envPointer, threadClass, currentThread);
+      if (thread == nullptr) return;
+
+      final existing = _rawCallObject(
+        envPointer,
+        thread,
+        getContextClassLoader,
+      );
+      if (existing != nullptr) {
+        // Already has one — the thread that created the VM, or a loader someone
+        // chose. Nothing to do.
+        _rawDeleteLocalRef(envPointer, existing);
+        return;
+      }
+
+      loaderClass = _rawFindClass(envPointer, 'java/lang/ClassLoader');
+      if (loaderClass == nullptr) return;
+
+      final getSystemClassLoader = _rawStaticMethodId(
+        envPointer,
+        loaderClass,
+        'getSystemClassLoader',
+        '()Ljava/lang/ClassLoader;',
+      );
+      if (getSystemClassLoader == nullptr) return;
+
+      loader = _rawCallStaticObject(
+        envPointer,
+        loaderClass,
+        getSystemClassLoader,
+      );
+      if (loader == nullptr) return;
+
+      _rawCallVoidWithObject(envPointer, thread, setContextClassLoader, loader);
+    } on Object {
+      // Deliberately swallowed: see the doc comment.
+    } finally {
+      _rawDeleteLocalRef(envPointer, loader);
+      _rawDeleteLocalRef(envPointer, loaderClass);
+      _rawDeleteLocalRef(envPointer, thread);
+      _rawDeleteLocalRef(envPointer, threadClass);
+      _rawClearException(envPointer);
+    }
   }
 
   /// Detaches the calling thread from the VM.
@@ -680,6 +784,58 @@ class Jvm {
         signature.toNativeUtf8(allocator: arena),
       ),
     );
+  }
+
+  Pointer<Void> _rawStaticMethodId(
+    Pointer<Void> envPointer,
+    Pointer<Void> clazz,
+    String name,
+    String signature,
+  ) {
+    if (clazz == nullptr) return nullptr;
+    final fn = fnSlotOf(
+      envPointer,
+      JniFn.getStaticMethodId,
+    ).cast<NativeFunction<MemberIdC>>().asFunction<MemberIdDart>();
+    return using(
+      (arena) => fn(
+        envPointer,
+        clazz,
+        name.toNativeUtf8(allocator: arena),
+        signature.toNativeUtf8(allocator: arena),
+      ),
+    );
+  }
+
+  Pointer<Void> _rawCallStaticObject(
+    Pointer<Void> envPointer,
+    Pointer<Void> clazz,
+    Pointer<Void> method,
+  ) {
+    final fn = fnSlotOf(
+      envPointer,
+      JniFn.callStaticObjectMethodA,
+    ).cast<NativeFunction<CallObjectAC>>().asFunction<CallObjectADart>();
+    return fn(envPointer, clazz, method, nullptr);
+  }
+
+  /// A `void` call taking a single object argument, staged through a one-slot
+  /// `jvalue[]`.
+  void _rawCallVoidWithObject(
+    Pointer<Void> envPointer,
+    Pointer<Void> receiver,
+    Pointer<Void> method,
+    Pointer<Void> argument,
+  ) {
+    final fn = fnSlotOf(
+      envPointer,
+      JniFn.callVoidMethodA,
+    ).cast<NativeFunction<CallVoidAC>>().asFunction<CallVoidADart>();
+    using((arena) {
+      final args = arena<Int64>();
+      args.value = argument.address;
+      fn(envPointer, receiver, method, args);
+    });
   }
 
   Pointer<Void> _rawCallObject(
