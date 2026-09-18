@@ -281,6 +281,18 @@ void main() {
 
       expect(() => array[5], throwsA(isA<JniError>()));
     });
+
+    /// The element type and the length, which is what one wants to see in a log
+    /// line or a failed expectation — a bare `JavaRef` handle tells neither.
+    test('toString carries the element type and the length', () {
+      final array = JavaArray.ofInts(jvm, [1, 2, 3]);
+      addTearDown(array.release);
+      expect(array.toString(), 'JavaArray([I[3])');
+
+      final strings = JavaArray.ofStrings(jvm, ['a']);
+      addTearDown(strings.release);
+      expect(strings.toString(), 'JavaArray([Ljava/lang/String;[1])');
+    });
   });
 
   group('array fields', () {

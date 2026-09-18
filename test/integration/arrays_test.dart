@@ -289,4 +289,93 @@ void main() {
       expect(jvm.isInstanceOf(array, objectClass), isTrue);
     });
   });
+
+  /// The descriptor-driven helpers — the layer `JavaArray` is built from, and
+  /// the one a caller reaches for when the element type is only known as a
+  /// string. What they refuse matters as much as what they accept: an element
+  /// type they do not understand must not become a silently wrong JNI call.
+  group('descriptor-driven helpers', () {
+    /// Matches a [JniError] whose message contains [fragment].
+    Matcher refusedWith(String fragment) => throwsA(
+      isA<JniError>().having((e) => e.message, 'message', contains(fragment)),
+    );
+
+    test('elementClass resolves a class name or a nested array', () {
+      expect(autoRelease(jvm.elementClass(JniType.string)).isNull, isFalse);
+      expect(autoRelease(jvm.elementClass('[I')).isNull, isFalse);
+      expect(
+        () => jvm.elementClass(JniType.int_),
+        refusedWith('not a reference element descriptor'),
+      );
+    });
+
+    test('a bad element aborts newArray, which releases what it built', () {
+      // The rollback is the point, and it has two shapes: a primitive array is
+      // filled in one call, an object array element by element — so the second
+      // one can fail with slots already written. Neither may leak the
+      // half-built array, and neither hands the caller a reference to it.
+      expect(
+        () => jvm.newArray(JniType.int_, [1, 'two']),
+        refusedWith('expected int'),
+      );
+      expect(
+        () => jvm.newArray(JniType.double_, [1.0, 'x']),
+        refusedWith('expected a double'),
+      );
+      expect(
+        () => jvm.newArray(JniType.string, ['written', Duration.zero]),
+        refusedWith('cannot store Duration'),
+      );
+    });
+
+    test('"void" is not an element type, in either direction', () {
+      final array = autoRelease(jvm.newArray(JniType.int_, [1, 2, 3]));
+
+      expect(
+        () => jvm.arrayToList(array, JniType.void_),
+        refusedWith('unknown element descriptor'),
+      );
+      expect(
+        () => jvm.getArrayElement(array, JniType.void_, 0),
+        refusedWith('unknown element descriptor'),
+      );
+      expect(
+        () => jvm.setArrayElement(array, JniType.void_, 0, 1),
+        refusedWith('unknown element descriptor'),
+      );
+    });
+
+    test('a JavaRef element is stored as itself, with no conversion', () {
+      final array = autoRelease(jvm.newArray(JniType.string, [null, null]));
+      final value = autoRelease(jvm.newString('já'));
+
+      jvm.setArrayElement(array, JniType.string, 1, value);
+
+      expect(jvm.getArrayElement(array, JniType.string, 1), 'já');
+      expect(jvm.getArrayElement(array, JniType.string, 0), isNull);
+    });
+
+    test('what cannot be converted says so, and says what would work', () {
+      final nested = autoRelease(
+        jvm.newArray('[I', [
+          [1],
+          [2],
+        ]),
+      );
+      final strings = autoRelease(jvm.newArray(JniType.string, ['a']));
+
+      expect(
+        () => jvm.setArrayElement(nested, '[I', 0, 'text'),
+        refusedWith('cannot store a String'),
+      );
+      expect(
+        () => jvm.setArrayElement(strings, JniType.string, 0, [1, 2]),
+        refusedWith('the element type is not itself an array'),
+      );
+      expect(
+        () => jvm.setArrayElement(strings, JniType.string, 0, Duration.zero),
+        refusedWith('use a String, List, JavaRef, bool, int, double or null'),
+      );
+    });
+  });
 }

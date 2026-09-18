@@ -1,6 +1,8 @@
 @TestOn('vm')
 library;
 
+import 'dart:ffi';
+
 import 'package:java_interop/java_interop.dart';
 import 'package:test/test.dart';
 
@@ -293,6 +295,122 @@ void main() {
       final staticInt = jvm.staticFieldId(clazz, 'staticIntField', 'I');
       jvm.setStaticIntField(clazz, staticInt, 99);
       expect(jvm.getStaticIntField(clazz, staticInt), 99);
+    });
+  });
+
+  /// The descriptor-driven pair, reached directly rather than through
+  /// `JavaObject.getField`.
+  ///
+  /// These checks are unreachable from the higher level, where resolving the
+  /// `jfieldID` fails first on a descriptor JNI does not know. They still have
+  /// to hold: the whole point of dispatching on the descriptor is that a type
+  /// it does not understand becomes an error rather than a `GetIntField` on
+  /// something that is not an int.
+  group('getFieldByType and setFieldByType', () {
+    late Jvm jvm;
+    late JavaRef clazz;
+    late JavaRef object;
+    late Pointer<Void> intField;
+    late Pointer<Void> stringField;
+
+    setUp(() {
+      jvm = testJvm;
+      clazz = autoRelease(jvm.findClass('com.nfeflash.example.Fixtures'));
+      object = autoRelease(
+        jvm.newObject(clazz, jvm.methodId(clazz, '<init>', '()V')),
+      );
+      intField = jvm.fieldId(clazz, 'intField', 'I');
+      stringField = jvm.fieldId(clazz, 'stringField', 'Ljava/lang/String;');
+    });
+
+    Matcher refusedWith(String fragment) => throwsA(
+      isA<JniError>().having((e) => e.message, 'message', contains(fragment)),
+    );
+
+    test('a field cannot have type "void"', () {
+      expect(
+        () =>
+            jvm.getFieldByType(JniType.void_, object, intField, static: false),
+        refusedWith('a field cannot have type "void"'),
+      );
+      expect(
+        () => jvm.setFieldByType(
+          JniType.void_,
+          object,
+          intField,
+          0,
+          static: false,
+        ),
+        refusedWith('a field cannot have type "void"'),
+      );
+    });
+
+    test('a descriptor that names no type at all is refused', () {
+      expect(
+        () => jvm.getFieldByType('Q', object, intField, static: false),
+        refusedWith('unknown field descriptor'),
+      );
+      expect(
+        () => jvm.setFieldByType('Q', object, intField, 0, static: false),
+        refusedWith('unknown field descriptor'),
+      );
+    });
+
+    test('a reference field takes a JavaRef or null, not a Dart value', () {
+      // No conversion here on purpose: `JavaObject.setField` boxes and makes
+      // strings, and this is the layer underneath it.
+      expect(
+        () => jvm.setFieldByType(
+          JniType.string,
+          object,
+          stringField,
+          'a Dart string',
+          static: false,
+        ),
+        refusedWith('expected a JavaRef or null'),
+      );
+
+      jvm.setFieldByType(
+        JniType.string,
+        object,
+        stringField,
+        autoRelease(jvm.newString('já')),
+        static: false,
+      );
+      expect(
+        jvm.stringFrom(
+          jvm.getFieldByType(JniType.string, object, stringField, static: false)
+              as JavaRef,
+        ),
+        'já',
+      );
+    });
+
+    test('a primitive field names the type it wanted', () {
+      expect(
+        () => jvm.setFieldByType(
+          JniType.int_,
+          object,
+          intField,
+          'seven',
+          static: false,
+        ),
+        refusedWith('expected a int for field "I", got String'),
+      );
+
+      // `F` and `D` widen an int, so only a non-number is refused — and it is
+      // refused by a different check than the integral types use.
+      final floatField = jvm.fieldId(clazz, 'floatField', 'F');
+      expect(
+        () => jvm.setFieldByType(
+          JniType.float,
+          object,
+          floatField,
+          'half',
+          static: false,
+        ),
+        refusedWith('expected a double for field "F", got String'),
+      );
     });
   });
 }

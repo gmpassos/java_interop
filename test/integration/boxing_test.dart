@@ -148,6 +148,57 @@ void main() {
       );
     });
 
+    /// The four narrow helpers, which inference never chooses: `box` gives an
+    /// `Integer` or a `Long` for a Dart int and a `Double` for a Dart double,
+    /// so a `Byte`, `Character`, `Short` or `Float` can only be asked for by
+    /// name — and `Byte.valueOf(1)` is not `equals` to `Integer.valueOf(1)`,
+    /// which is what makes the distinction matter to Java.
+    test('the narrow helpers box the type they name', () {
+      final cases = <JavaRef, (JavaWrapper, Object)>{
+        autoRelease(jvm.boxByte(-1)): (JavaWrapper.byte, -1),
+        autoRelease(jvm.boxChar(0x41)): (JavaWrapper.char, 0x41),
+        autoRelease(jvm.boxShort(-300)): (JavaWrapper.short, -300),
+        autoRelease(jvm.boxFloat(0.5)): (JavaWrapper.float, 0.5),
+      };
+
+      cases.forEach((boxed, expected) {
+        final (wrapper, value) = expected;
+        expect(jvm.wrapperOf(boxed), same(wrapper));
+        expect(
+          jvm.unbox(wrapper.descriptor, boxed),
+          value,
+          reason: wrapper.className,
+        );
+      });
+    });
+
+    test('unboxing something that is not a wrapper is refused', () {
+      final text = autoRelease(jvm.newString('not a number'));
+      expect(
+        () => jvm.unbox(JniType.string, text),
+        throwsA(
+          isA<JniError>().having(
+            (e) => e.message,
+            'message',
+            contains('not a primitive wrapper type'),
+          ),
+        ),
+      );
+    });
+
+    test('inference has nothing to offer for a value that is not a number', () {
+      expect(
+        () => jvm.box(JniType.object, Duration.zero),
+        throwsA(
+          isA<JniError>().having(
+            (e) => e.message,
+            'message',
+            contains('expected a bool, int or double'),
+          ),
+        ),
+      );
+    });
+
     test('unboxing a null reference gives null', () {
       final nullRef = JavaRef(jvm, nullptr, JavaRefKind.local);
       expect(jvm.unboxAs(JavaWrapper.int_, nullRef), isNull);
@@ -287,6 +338,42 @@ void main() {
       addTearDown(got.release);
 
       expect(got.toDart(), 42);
+    });
+  });
+
+  group('JavaWrapper lookups', () {
+    test('forDescriptor maps every wrapper, and nothing else', () {
+      for (final wrapper in JavaWrapper.values) {
+        expect(
+          JavaWrapper.forDescriptor(wrapper.descriptor),
+          same(wrapper),
+          reason: wrapper.descriptor,
+        );
+      }
+      expect(JavaWrapper.forDescriptor(JniType.string), isNull);
+    });
+
+    test('forPrimitive maps the primitive each wrapper wraps', () {
+      for (final wrapper in JavaWrapper.values) {
+        expect(
+          JavaWrapper.forPrimitive(wrapper.primitive),
+          same(wrapper),
+          reason: wrapper.primitive,
+        );
+      }
+      expect(JavaWrapper.forPrimitive(JniType.void_), isNull);
+      expect(JavaWrapper.forPrimitive(JniType.string), isNull);
+    });
+
+    test('the signatures used to call valueOf and the unboxer', () {
+      expect(JavaWrapper.int_.valueOfSignature, '(I)Ljava/lang/Integer;');
+      expect(JavaWrapper.int_.unboxSignature, '()I');
+      expect(JavaWrapper.char.valueOfSignature, '(C)Ljava/lang/Character;');
+    });
+
+    test('toString names the wrapper class', () {
+      expect(JavaWrapper.int_.toString(), 'JavaWrapper(java.lang.Integer)');
+      expect(JavaWrapper.char.toString(), 'JavaWrapper(java.lang.Character)');
     });
   });
 }

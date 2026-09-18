@@ -143,6 +143,30 @@ void main() {
         ),
       );
     });
+
+    /// Exiting a monitor this thread never entered is the one failure JNI
+    /// reports here, and it arrives as the Java exception rather than as a bare
+    /// error code — `MonitorExit` raises `IllegalMonitorStateException`, and
+    /// leaving it pending would poison the next call on this thread.
+    test('exiting a monitor that was never entered raises the Java error', () {
+      final target = autoReleaseObject(
+        testJvm.classFor('java.lang.Object').newJava('()'),
+      );
+
+      expect(
+        () => testJvm.monitorExit(target.ref),
+        throwsA(
+          isA<JavaException>().having(
+            (e) => e.isA('IllegalMonitorStateException'),
+            'is IllegalMonitorStateException',
+            isTrue,
+          ),
+        ),
+      );
+
+      // Cleared on the way out: the monitor is still usable afterwards.
+      expect(testJvm.synchronized(target, () => 'usable'), 'usable');
+    });
   }, skip: skipWithoutJdk);
 
   group('refTypeOf', () {

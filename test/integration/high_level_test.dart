@@ -49,6 +49,21 @@ void main() {
       expect(nullValue.isNull, isTrue);
       expect(nullValue.toString(), 'JavaObject(null)');
     });
+
+    test('isInstanceOf answers Java instanceof, up the hierarchy', () {
+      final object = fixturesInstance();
+
+      final fixtures = JavaClass.forName(jvm, 'com.nfeflash.example.Fixtures');
+      addTearDown(fixtures.release);
+      final objectClass = JavaClass.forName(jvm, 'java.lang.Object');
+      addTearDown(objectClass.release);
+      final string = JavaClass.forName(jvm, 'java.lang.String');
+      addTearDown(string.release);
+
+      expect(object.isInstanceOf(fixtures), isTrue);
+      expect(object.isInstanceOf(objectClass), isTrue, reason: 'a supertype');
+      expect(object.isInstanceOf(string), isFalse);
+    });
   });
 
   group('working with the JDK', () {

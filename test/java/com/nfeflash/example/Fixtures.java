@@ -434,6 +434,13 @@ public class Fixtures {
         SOUR,
         UMAMI;
 
+        /**
+         * A static field of the enum's own type that is not a constant: the
+         * shape {@code JavaClass.enumConstant} has to refuse, since it resolves
+         * by field name and type and this one resolves fine and is null.
+         */
+        public static Flavour UNSET = null;
+
         public String describe() {
             return "flavour:" + name();
         }

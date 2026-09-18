@@ -244,6 +244,28 @@ void main() {
 
       expect(() => flavour.enumConstant('BITTER'), throwsA(isA<JniError>()));
     });
+
+    /// A static field of the enum's own type that happens to be null resolves
+    /// exactly like a constant — same name lookup, same descriptor — so the
+    /// null is the only thing left to notice. Handing it back would produce a
+    /// `JavaObject` that fails on first use, far from here.
+    test('a static field that is not a constant fails by name', () {
+      final flavour = testJvm.classFor(
+        r'com.nfeflash.example.Fixtures$Flavour',
+      );
+      addTearDown(testJvm.releaseCachedClasses);
+
+      expect(
+        () => flavour.enumConstant('UNSET'),
+        throwsA(
+          isA<JniError>().having(
+            (e) => e.message,
+            'message',
+            contains('no enum constant'),
+          ),
+        ),
+      );
+    });
   }, skip: skipWithoutJdk);
 
   group('localFrameReturning', () {
