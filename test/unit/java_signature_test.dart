@@ -304,4 +304,128 @@ void main() {
       );
     });
   });
+
+  group('JSig.parse', () {
+    test('parses a declaration into a signature', () {
+      expect(JSig.parse('int add(int, int)').descriptor, '(II)I');
+      expect(JSig.parse('void run()').descriptor, '()V');
+      expect(
+        JSig.parse('String join(java.util.List<String>, String)').descriptor,
+        '(Ljava/util/List;Ljava/lang/String;)Ljava/lang/String;',
+      );
+    });
+
+    test('agrees with JavaMethod.parse, whose grammar it borrows', () {
+      expect(
+        JSig.parse('long total(int[])'),
+        JavaMethod.parse('long total(int[])').signature,
+      );
+    });
+  });
+
+  group('toString and hashCode', () {
+    /// These reach error messages — `JniError` interpolates the type or the
+    /// signature it refused — so a wrong one is read by whoever is debugging.
+    test('a type prints as its descriptor', () {
+      expect(JType.int_.toString(), 'I');
+      expect(JType.string.array.toString(), '[Ljava/lang/String;');
+    });
+
+    test('a signature prints as its descriptor', () {
+      expect(
+        const JSig.of([JType.int_], returns: JType.boolean).toString(),
+        '(I)Z',
+      );
+      expect(
+        const JSig.ctor([JType.string]).toString(),
+        '(Ljava/lang/String;)V',
+      );
+    });
+
+    test('a signature hashes by descriptor', () {
+      expect(
+        const JSig.of([JType.int_]).hashCode,
+        const JSig.of([JType.int_]).hashCode,
+      );
+      expect(
+        JSig.parse('void f(int)').hashCode,
+        const JSig.of([JType.int_]).hashCode,
+      );
+    });
+
+    test('a field prints as name:descriptor', () {
+      expect(JavaField.parse('int count').toString(), 'count:I');
+      expect(
+        JavaField.parse('String name').toString(),
+        'name:Ljava/lang/String;',
+      );
+    });
+  });
+
+  group('malformed declarations say what is wrong', () {
+    test('an array type with something between the brackets', () {
+      expect(
+        () => JType.parse('int[3]'),
+        throwsA(
+          isA<JniError>().having(
+            (e) => e.message,
+            'message',
+            contains('malformed array type'),
+          ),
+        ),
+      );
+    });
+
+    test('a method name that is not an identifier', () {
+      expect(
+        () => JavaMethod.parse('int not.a.name(int)'),
+        throwsA(
+          isA<JniError>().having(
+            (e) => e.message,
+            'message',
+            contains('not a Java method name'),
+          ),
+        ),
+      );
+    });
+
+    test('an empty parameter, which a trailing comma leaves behind', () {
+      expect(
+        () => JavaMethod.parse('void f(int,)'),
+        throwsA(
+          isA<JniError>().having(
+            (e) => e.message,
+            'message',
+            contains('empty parameter'),
+          ),
+        ),
+      );
+    });
+
+    test('a field name that is not an identifier', () {
+      expect(
+        () => JavaField.parse('int not.a.name'),
+        throwsA(
+          isA<JniError>().having(
+            (e) => e.message,
+            'message',
+            contains('not a Java field name'),
+          ),
+        ),
+      );
+    });
+
+    test('a stray ">", which erasing generics cannot balance', () {
+      expect(
+        () => JType.parse('java.util.Map<String>>'),
+        throwsA(
+          isA<JniError>().having(
+            (e) => e.message,
+            'message',
+            contains('unbalanced ">"'),
+          ),
+        ),
+      );
+    });
+  });
 }

@@ -360,5 +360,30 @@ void main() {
 
       expect(jvm.stringFrom(result), 'Raw');
     });
+
+    /// `callByReturnType` is the dispatcher the signature-driven layer sits on:
+    /// it picks the JNI accessor from the return descriptor, which is the whole
+    /// reason `callIntMethod` is never called for a method returning `long`. A
+    /// descriptor it cannot place has to fail here, before the call.
+    test('callByReturnType dispatches on the descriptor, and refuses junk', () {
+      final clazz = autoRelease(jvm.findClass('com.nfeflash.example.Fixtures'));
+      final method = jvm.staticMethodId(clazz, 'staticSum', '(II)I');
+      final args = [JValue.fromInt(1), JValue.fromInt(2)];
+
+      expect(
+        jvm.callByReturnType(JniType.int_, clazz, method, args, static: true),
+        3,
+      );
+      expect(
+        () => jvm.callByReturnType('Q', clazz, method, args, static: true),
+        throwsA(
+          isA<JniError>().having(
+            (e) => e.message,
+            'message',
+            contains('unknown return descriptor'),
+          ),
+        ),
+      );
+    });
   });
 }

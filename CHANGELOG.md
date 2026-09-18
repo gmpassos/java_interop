@@ -39,6 +39,26 @@ The regression test runs in its own process
 isolate may have attached long before the test, and what is under test is what
 an attach leaves behind on a *fresh* thread.
 
+### Tests
+
+500, up from 467 in 1.4.0, and line coverage from 94.4% to 96.9%. The gaps were
+read as a list of things no test had ever called, which is what they turned out
+to be: `JSig.parse`, `JavaWrapper.forPrimitive`,
+`boxByte`/`boxChar`/`boxShort`/`boxFloat`, `JavaObject.isInstanceOf`,
+`Jvm.detachCurrentThread` and `JavaArray.toString` had no coverage at all, and
+neither did most of what the descriptor-driven layer *refuses* — an element
+type, field type or return type it cannot place has to fail before the JNI
+call, not turn into a `GetIntField` on something that is not an int.
+
+`jvalue.dart`, `signatures.dart`, `java_signature.dart`, `boxing.dart`,
+`java_array.dart`, `java_class.dart`, `jvm_calls.dart` and `jvm_fields.dart` are
+now fully covered.
+
+It also found dead code: `JniSignature._typeEnd` took an `allowVoid` flag that
+was `false` at both call sites, because `parse` handles the one bare `void`
+return itself. The flag and its unreachable branch are gone; the two error
+messages it guarded are unchanged.
+
 ## 1.4.0
 
 Java interfaces can be implemented in Dart. This was the one capability gap: a

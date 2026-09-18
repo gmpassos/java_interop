@@ -89,7 +89,7 @@ class JniSignature {
     final parameters = <String>[];
     var i = 1;
     while (i < close) {
-      final end = _typeEnd(descriptor, i, close, allowVoid: false);
+      final end = _typeEnd(descriptor, i, close);
       parameters.add(descriptor.substring(i, end));
       i = end;
     }
@@ -99,7 +99,7 @@ class JniSignature {
       throw JniError('invalid signature (missing return type): $descriptor');
     }
     if (returnPart != JniType.void_) {
-      final end = _typeEnd(returnPart, 0, returnPart.length, allowVoid: false);
+      final end = _typeEnd(returnPart, 0, returnPart.length);
       if (end != returnPart.length) {
         throw JniError('invalid signature (trailing return type): $descriptor');
       }
@@ -135,14 +135,10 @@ class JniSignature {
   /// Index just past the type descriptor starting at [start].
   ///
   /// `V` is only ever legal as a bare return type — never as a parameter, and
-  /// never as an array element — so [allowVoid] is false at every call site
-  /// that is not the return position handled directly by [JniSignature.parse].
-  static int _typeEnd(
-    String s,
-    int start,
-    int limit, {
-    required bool allowVoid,
-  }) {
+  /// never as an array element — and the one bare return type is handled by
+  /// [JniSignature.parse] before it gets here, so every `V` reaching this
+  /// method is a malformed signature.
+  static int _typeEnd(String s, int start, int limit) {
     var i = start;
     while (i < limit && s[i] == '[') {
       i++;
@@ -167,13 +163,9 @@ class JniSignature {
       if (i != start) {
         throw JniError('invalid signature (void array): $s');
       }
-      if (!allowVoid) {
-        throw JniError(
-          'invalid signature ("void" is only valid as a bare '
-          'return type): $s',
-        );
-      }
-      return i + 1;
+      throw JniError(
+        'invalid signature ("void" is only valid as a bare return type): $s',
+      );
     }
 
     if (!'ZBCSIJFD'.contains(code)) {

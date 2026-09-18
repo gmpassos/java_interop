@@ -147,6 +147,9 @@ void main() {
         expectRejected(JniType.boolean, 1, 'expected a bool');
         expectRejected(JniType.int_, 'x', 'expected an int');
         expectRejected(JniType.int_, 1.5, 'expected an int');
+        expectRejected(JniType.long, 'x', 'expected an int');
+        // `F` widens an int, so only a non-number is refused.
+        expectRejected(JniType.float, 'x', 'expected a double');
         expectRejected(JniType.double_, 'x', 'expected a double');
         expectRejected(JniType.string, 'a Dart string', 'expected a Pointer');
         expectRejected(JniType.void_, null, 'not a valid parameter type');
