@@ -14,7 +14,7 @@ depends on nothing beyond the Dart SDK.
   - the classes and resources that must be in the jars, and the classes that
     must not be;
   - resource content to check: for a file several jars ship at the same path,
-    which one won when they were merged.
+    that a copy with the content needed is still there after they were merged.
   
   It also resolves the cache directory: an override, then the cache variable,
   then the operating system's cache (`~/Library/Caches`, `%LOCALAPPDATA%`,
@@ -23,24 +23,29 @@ depends on nothing beyond the Dart SDK.
   `dependency:copy-dependencies` (runtime scope) into
   `<cache>/<runtimeId>/jars/`. Writes `classpath.txt` with **relative** paths,
   so the cache can be relocated, plus a `manifest.json`, and verifies the
-  result. `runProvisioningCli` is a complete `setup_jars` command:
+  result. It builds in a staging directory and renames it into place only
+  when complete, with the manifest written last: an interrupted run never
+  looks provisioned, and `--force` replaces the previous runtime only once the
+  new one exists. `runProvisioningCli` is a complete `setup_jars` command:
   - `--cache-dir`, `--maven`, `--offline`, `--force`, `--verify-only`,
     `--print-classpath`;
-  - one exit code per failure: 2 Maven not found, 3 resolution failed,
-    4 verification failed.
+  - one exit code per failure: 2 Maven not found or not runnable, 3 not
+    provisioned (Maven failed, the cache not writable, or nothing there to
+    verify), 4 verification failed.
   
   A `--maven` that does not exist is an error, never a quiet fall back to
   another Maven.
 - **`resolveClassPath`.** Finds the jars at runtime: an explicit list, then
-  the class-path variable (a list or a file), then the cache directories. A
-  cache of another runtime id, or with a jar missing, is skipped. When nothing
-  is found, `JavaRuntimeNotProvisioned` names the setup command and every place
+  the class-path variable (a list or a file), then the cache directories.
+  Every entry comes back absolute. A cache of another runtime id, with a jar
+  missing, or whose verification failed is skipped. When nothing is found,
+  `JavaRuntimeNotProvisioned` names the setup command and every place
   searched.
 - **`verifyJars`.** Checks jars and class directories against the spec without
-  a JVM, and reports unreadable entries too (a truncated download).
+  a JVM, and reports unreadable entries too, a truncated download among them.
   **`JarFile`** is the reader behind it: the zip central directory, stored and
-  deflated entries, over `dart:io`. It refuses zip64 and encryption rather than
-  misreading them.
+  deflated entries, over `dart:io`. It refuses zip64, encryption and
+  out-of-bounds offsets rather than misreading them.
 
 ## 1.5.0
 

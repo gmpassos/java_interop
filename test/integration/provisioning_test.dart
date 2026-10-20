@@ -129,6 +129,25 @@ void main() {
         expect(() => jar.readText('a.txt'), throwsFormatException);
       }, skip: skip);
 
+      test('a name that runs past the end of the file', () {
+        final path = patched(
+          (data, central, _) =>
+              data.setUint16(central + 28, 0xfff0, Endian.little),
+        );
+        expect(() => JarFile.open(path), throwsFormatException);
+      }, skip: skip);
+
+      test('a local header past the end of the file', () {
+        final path = patched(
+          (data, central, _) =>
+              data.setUint32(central + 42, 0x7ffffff0, Endian.little),
+        );
+        expect(
+          () => JarFile.open(path).readText('a.txt'),
+          throwsFormatException,
+        );
+      }, skip: skip);
+
       test('an entry whose local header is not where it says', () {
         final path = patched(
           (data, central, _) => data.setUint32(central + 42, 1, Endian.little),
@@ -210,7 +229,7 @@ void main() {
         allOf(
           contains('missing class: com.example.Impl — expected from impl.jar'),
           contains('remove conflict.jar'),
-          contains('another jar\'s file of the same name won'),
+          contains('no copy contains "name="default""'),
           contains('unreadable'),
         ),
       );
@@ -227,6 +246,31 @@ void main() {
       expect(result.missingResources, ['META-INF/registry.xml']);
       expect(result.wrongResourceContent, isEmpty);
     }, skip: skip);
+
+    test('a truncated jar is reported unreadable, not a crash', () {
+      final good = makeJar('whole.jar', {'com/example/Api.class': 'x' * 500});
+      final bytes = File(good).readAsBytesSync();
+      // Cut in the middle: the central directory is gone too.
+      final cut = File('${work.path}${sep}cut.jar')
+        ..writeAsBytesSync(bytes.sublist(0, bytes.length ~/ 2));
+      final result = verifyJars(spec, [cut.path]);
+      expect(result.unreadable.keys, [cut.path]);
+      expect(result.jarCount, 0);
+    }, skip: skip);
+
+    test('a class directory with a trailing separator reads the same', () {
+      final classes = Directory('${work.path}${sep}classes');
+      File('${classes.path}${sep}com${sep}example${sep}Api.class')
+        ..createSync(recursive: true)
+        ..writeAsStringSync('');
+      const apiOnly = JavaRuntimeSpec(
+        name: 'demo',
+        runtimeId: 'v1',
+        requiredClasses: {'com.example.Api': 'api'},
+      );
+      expect(verifyJars(apiOnly, ['${classes.path}$sep']).ok, isTrue);
+      expect(verifyJars(apiOnly, [classes.path]).ok, isTrue);
+    });
 
     test('a class directory counts like a jar', () {
       final classes = Directory('${work.path}${sep}classes');
@@ -412,15 +456,80 @@ void main() {
     });
 
     test('the process environment is the default', () {
-      // Whatever this machine has, an explicit class path short-circuits it.
-      final jar = File('${work.path}${sep}x.jar')..writeAsStringSync('');
-      final resolved = resolveClassPath(spec, explicit: [jar.path]);
-      expect(
-        resolved.toString(),
-        'ResolvedClassPath(1 entries, from explicit)',
+      // Variables no environment has, so the process's own is read and
+      // gives nothing; the override is the only place with a runtime.
+      const unique = JavaRuntimeSpec(
+        name: 'demo_pkg',
+        runtimeId: 'v2',
+        cacheDirEnv: 'JAVA_INTEROP_TEST_UNSET_CACHE',
+        classPathEnv: 'JAVA_INTEROP_TEST_UNSET_CLASSPATH',
       );
-      expect(spec.cacheBaseDir().isAbsolute, isTrue);
-      expect(spec.runtimeDir().path, endsWith('v2'));
+      final base = '${work.path}${sep}cache';
+      provisionAt(base);
+      final resolved = resolveClassPath(unique, cacheDirOverride: base);
+      expect(resolved.toString(), 'ResolvedClassPath(1 entries, from cache)');
+      expect(unique.cacheBaseDir().isAbsolute, isTrue);
+      expect(unique.runtimeDir().path, endsWith('v2'));
+    });
+
+    test('every entry comes back absolute', () {
+      final previous = Directory.current;
+      addTearDown(() => Directory.current = previous);
+      Directory.current = work;
+      File('${work.path}${sep}x.jar').writeAsStringSync('');
+      Directory('${work.path}${sep}lists').createSync();
+      File('${work.path}${sep}lists${sep}y.jar').writeAsStringSync('');
+      final list = File('${work.path}${sep}lists${sep}cp.list')
+        ..writeAsStringSync('y.jar\n');
+
+      final explicit = resolveClassPath(
+        spec,
+        explicit: ['x.jar'],
+        environment: const {},
+      );
+      expect(explicit.entries.single, '${Directory.current.path}${sep}x.jar');
+
+      // A list file's relative lines are relative to the file, not to the
+      // current directory.
+      final fromList = resolveClassPath(
+        spec,
+        environment: {'DEMO_CLASSPATH': list.path},
+      );
+      expect(fromList.entries.single, endsWith('lists${sep}y.jar'));
+      expect(File(fromList.entries.single).isAbsolute, isTrue);
+    });
+
+    test('a cache whose provisioning failed verification is skipped', () {
+      final base = '${work.path}${sep}cache';
+      final dir = provisionAt(base);
+      File(
+        '${dir.path}$sep${JavaRuntimeSpec.manifestFileName}',
+      ).writeAsStringSync(jsonEncode({'runtimeId': 'v2', 'verified': false}));
+      expect(
+        () => resolveClassPath(
+          spec,
+          cacheDirOverride: base,
+          environment: const {},
+        ),
+        throwsA(isA<JavaRuntimeNotProvisioned>()),
+      );
+    });
+
+    test('an absolute entry in classpath.txt is kept as it is', () {
+      final base = '${work.path}${sep}cache';
+      final dir = provisionAt(base);
+      final elsewhere = File('${work.path}${sep}elsewhere.jar')
+        ..writeAsStringSync('');
+      File(
+        '${dir.path}$sep${JavaRuntimeSpec.classPathFileName}',
+      ).writeAsStringSync('${elsewhere.path}\njars/a.jar\n');
+      final resolved = resolveClassPath(
+        spec,
+        cacheDirOverride: base,
+        environment: const {},
+      );
+      expect(resolved.entries.first, elsewhere.path);
+      expect(readRuntimeClassPath(spec, dir), resolved.entries);
     });
 
     test('nothing anywhere: the command to run and every place searched', () {
@@ -464,8 +573,13 @@ void main() {
 #!/bin/sh
 echo "\$@" > "${work.path}/mvn-args"
 if [ $exitCode -ne 0 ]; then echo "resolution failed" >&2; exit $exitCode; fi
-mkdir -p jars
-cp "$jar" jars/
+out=""
+for arg in "\$@"; do
+  case "\$arg" in -DoutputDirectory=*) out="\${arg#-DoutputDirectory=}";; esac
+done
+[ -n "\$out" ] || { echo "no -DoutputDirectory" >&2; exit 9; }
+mkdir -p "\$out"
+cp "$jar" "\$out/"
 ''');
       Process.runSync('chmod', ['+x', script.path]);
       return script.path;
@@ -522,6 +636,10 @@ cp "$jar" jars/
       final args = File('${work.path}${sep}mvn-args').readAsStringSync();
       expect(args, contains('-o'));
       expect(args, contains('-DincludeScope=runtime'));
+      expect(
+        args,
+        contains('-DoutputDirectory=${JavaRuntimeSpec.jarsDirName}'),
+      );
       expect(args, contains('dependency:copy-dependencies'));
 
       // And the runtime it made is one resolveClassPath finds.
@@ -531,6 +649,91 @@ cp "$jar" jars/
         environment: const {},
       );
       expect(resolved.entries.single, endsWith('lib.jar'));
+    }, skip: skip ?? (Platform.isWindows ? 'sh script' : null));
+
+    test(
+      'an interrupted provisioning is not taken for a finished one',
+      () async {
+        final jar = makeJar('lib.jar', {'com/example/Api.class': ''});
+        final spec = specFor('v1', classes: {'com.example.Api': 'lib'});
+        final cache = '${work.path}${sep}cache';
+        // What a run killed half-way used to leave: jars/, nothing else; and a
+        // staging directory from another killed run.
+        final runtime = spec.runtimeDir(override: cache);
+        Directory('${runtime.path}${sep}jars').createSync(recursive: true);
+        Directory('${runtime.path}.partial').createSync(recursive: true);
+
+        final result = await provisionJavaRuntime(
+          spec,
+          cacheDir: cache,
+          maven: fakeMaven(jar),
+        );
+        expect(result.provisioned, isTrue);
+        expect(result.ok, isTrue, reason: result.verification.describe());
+        expect(Directory('${runtime.path}.partial').existsSync(), isFalse);
+        expect(Directory('${runtime.path}.previous').existsSync(), isFalse);
+      },
+      skip: skip ?? (Platform.isWindows ? 'sh script' : null),
+    );
+
+    test('a failed --force leaves the previous runtime as it was', () async {
+      final jar = makeJar('lib.jar', {'com/example/Api.class': ''});
+      final spec = specFor('v1');
+      final cache = '${work.path}${sep}cache';
+      final first = await provisionJavaRuntime(
+        spec,
+        cacheDir: cache,
+        maven: fakeMaven(jar),
+      );
+
+      await expectLater(
+        provisionJavaRuntime(
+          spec,
+          cacheDir: cache,
+          maven: fakeMaven(jar, exitCode: 1),
+          force: true,
+        ),
+        throwsA(isA<MavenFailed>()),
+      );
+
+      // Still there, still resolvable: a running deployment never noticed.
+      final resolved = resolveClassPath(
+        spec,
+        cacheDirOverride: cache,
+        environment: const {},
+      );
+      expect(resolved.runtimeDir!.path, first.runtimeDir.path);
+      expect(
+        Directory('${first.runtimeDir.path}.partial').existsSync(),
+        isFalse,
+      );
+    }, skip: skip ?? (Platform.isWindows ? 'sh script' : null));
+
+    test('a runtime failing verification is kept for inspection, but not '
+        'resolved', () async {
+      final jar = makeJar('lib.jar', {'com/example/Api.class': ''});
+      final spec = specFor('v1', classes: {'com.example.Missing': 'x.jar'});
+      final cache = '${work.path}${sep}cache';
+      final result = await provisionJavaRuntime(
+        spec,
+        cacheDir: cache,
+        maven: fakeMaven(jar),
+      );
+      expect(result.ok, isFalse);
+      expect(
+        File(
+          '${result.runtimeDir.path}$sep${JavaRuntimeSpec.manifestFileName}',
+        ).readAsStringSync(),
+        contains('"verified": false'),
+      );
+      expect(
+        () => resolveClassPath(
+          spec,
+          cacheDirOverride: cache,
+          environment: const {},
+        ),
+        throwsA(isA<JavaRuntimeNotProvisioned>()),
+      );
     }, skip: skip ?? (Platform.isWindows ? 'sh script' : null));
 
     test('already provisioned: only verified, unless forced', () async {
@@ -697,6 +900,19 @@ cp "$jar" jars/
         ]);
         expect(noMaven, 2);
         expect(noMavenErr, contains('JAVA_INTEROP_TEST_CACHE'));
+
+        if (!Platform.isWindows) {
+          // There, but not executable: still "no Maven", not a crash.
+          final notExecutable = File('${work.path}${sep}mvn-noexec')
+            ..writeAsStringSync('#!/bin/sh\n');
+          final (cannotRun, _, cannotRunErr) = await cli(specFor('v1'), [
+            ...cache,
+            '--maven',
+            notExecutable.path,
+          ]);
+          expect(cannotRun, 2);
+          expect(cannotRunErr, contains('could not be run'));
+        }
 
         if (!Platform.isWindows) {
           final (failed, _, _) = await cli(specFor('v1'), [

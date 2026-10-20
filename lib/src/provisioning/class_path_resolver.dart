@@ -96,10 +96,13 @@ class JavaRuntimeNotProvisioned implements Exception {
 ///    `.dart_tool/` ([JavaRuntimeSpec.devRuntimeDir]).
 ///
 /// A runtime directory counts only when its `manifest.json` names this
-/// [JavaRuntimeSpec.runtimeId] (or it has none) and every entry of its
-/// `classpath.txt` exists: a half-provisioned cache has to fail here, not
-/// with a `NoClassDefFoundError` later. An explicit or environment class path
-/// with a missing entry fails too.
+/// [JavaRuntimeSpec.runtimeId] (or it has none), does not record a failed
+/// verification, and every entry of its `classpath.txt` exists: a
+/// half-provisioned or rejected cache has to fail here, not with a
+/// `NoClassDefFoundError` later. An explicit or environment class path with
+/// a missing entry fails too. Every entry comes back absolute; relative ones
+/// are taken against the current directory, the runtime directory, or the
+/// list file they are in.
 ///
 /// Throws [JavaRuntimeNotProvisioned] — with the setup command and every place
 /// searched — when nothing is found.
@@ -115,7 +118,11 @@ ResolvedClassPath resolveClassPath(
 
   if (explicit != null && explicit.isNotEmpty) {
     return ResolvedClassPath(
-      entries: _existing(spec, explicit, 'the explicit class path'),
+      entries: _existing(
+        spec,
+        _entriesOf(explicit, relativeTo: Directory.current.path),
+        'the explicit class path',
+      ),
       source: ClassPathSource.explicit,
     );
   }
@@ -173,18 +180,17 @@ ResolvedClassPath resolveClassPath(
 }
 
 /// The class path recorded in the runtime directory [dir], absolute; `null`
-/// when there is none, it belongs to another runtime id, or an entry is
+/// when there is none, it belongs to another runtime id, its provisioning
+/// failed verification (`"verified": false` in the manifest), or an entry is
 /// missing.
 List<String>? readRuntimeClassPath(JavaRuntimeSpec spec, Directory dir) {
-  final file = File(joinPath([dir.path, JavaRuntimeSpec.classPathFileName]));
-  if (!file.existsSync()) return null;
-
   final manifest = File(joinPath([dir.path, JavaRuntimeSpec.manifestFileName]));
   if (manifest.existsSync()) {
     try {
       final decoded = jsonDecode(manifest.readAsStringSync());
       if (decoded is! Map ||
-          (decoded['runtimeId'] ?? spec.runtimeId) != spec.runtimeId) {
+          (decoded['runtimeId'] ?? spec.runtimeId) != spec.runtimeId ||
+          decoded['verified'] == false) {
         return null;
       }
     } on FormatException {
@@ -192,35 +198,55 @@ List<String>? readRuntimeClassPath(JavaRuntimeSpec spec, Directory dir) {
     }
   }
 
-  final entries = [
-    for (final line in file.readAsLinesSync())
-      if (line.trim() case final entry
-          when entry.isNotEmpty && !entry.startsWith('#'))
-        _isAbsolute(entry) ? entry : joinPath([dir.path, entry]),
-  ];
+  final entries = recordedClassPath(dir);
+  if (entries == null) return null;
   for (final entry in entries) {
     if (!_exists(entry)) return null;
   }
   return entries;
 }
 
+/// The entries of [dir]'s `classpath.txt`, absolute — relative ones against
+/// [dir] — whether or not they exist; `null` when there is no such file.
+///
+/// The one reader of the file, for resolving a class path and for the
+/// provisioner's own checks.
+List<String>? recordedClassPath(Directory dir) {
+  final file = File(joinPath([dir.path, JavaRuntimeSpec.classPathFileName]));
+  if (!file.existsSync()) return null;
+  return _entriesOf(file.readAsLinesSync(), relativeTo: dir.absolute.path);
+}
+
+/// The class-path entries of [lines], skipping blanks and `#` comments, made
+/// absolute against [relativeTo].
+List<String> _entriesOf(Iterable<String> lines, {required String relativeTo}) =>
+    [
+      for (final line in lines)
+        if (line.trim() case final entry
+            when entry.isNotEmpty && !entry.startsWith('#'))
+          _absolute(entry, relativeTo),
+    ];
+
+String _absolute(String entry, String relativeTo) =>
+    _isAbsolute(entry) ? entry : joinPath([relativeTo, entry]);
+
 /// A [JavaRuntimeSpec.classPathEnv] value: a separated list, or — when it is
-/// one path that is a file other than a jar — a file with one entry per line.
+/// one path that is a file other than a jar — a file with one entry per line,
+/// relative ones against the file's directory.
 List<String> _parseClassPathValue(String value) {
   if (!value.contains(classPathSeparator) && !value.endsWith('.jar')) {
     final file = File(value);
     if (file.existsSync()) {
-      return [
-        for (final line in file.readAsLinesSync())
-          if (line.trim() case final e when e.isNotEmpty && !e.startsWith('#'))
-            e,
-      ];
+      return _entriesOf(
+        file.readAsLinesSync(),
+        relativeTo: file.absolute.parent.path,
+      );
     }
   }
-  return [
-    for (final entry in value.split(classPathSeparator))
-      if (entry.trim().isNotEmpty) entry.trim(),
-  ];
+  return _entriesOf(
+    value.split(classPathSeparator),
+    relativeTo: Directory.current.path,
+  );
 }
 
 List<String> _existing(

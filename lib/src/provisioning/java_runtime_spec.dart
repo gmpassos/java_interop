@@ -88,11 +88,16 @@ class JavaRuntimeSpec {
   /// Resource paths (`META-INF/services/…`) that must be in the jars.
   final List<String> requiredResources;
 
-  /// Resource path → text it must contain, in at least one jar.
+  /// Resource path → text that at least one copy of it must contain.
   ///
-  /// For a resource several jars ship at the same path: when they are merged,
-  /// one silently replaces the others, and the file being present says
-  /// nothing about whether the right one won.
+  /// For a resource several jars ship at the same path, read by a library
+  /// that looks at every copy (`ClassLoader.getResources`, as service
+  /// registries do): when the jars are merged into one, a copy silently
+  /// replaces the others, and the file being present says nothing about
+  /// whether the copy that was needed survived. This checks that it did.
+  ///
+  /// It does not check *which* copy comes first. For a library that reads
+  /// only the first (`getResource`), make sure no other jar ships the path.
   final Map<String, String> requiredResourceContent;
 
   /// Class name → what brings it in. None may be in the jars: for the
@@ -133,12 +138,14 @@ class JavaRuntimeSpec {
     if (fromEnv != null && fromEnv.trim().isNotEmpty) {
       return Directory(fromEnv.trim()).absolute;
     }
-    return Directory(defaultCacheBasePath(environment: env));
+    return Directory(defaultCacheBasePath(environment: env)).absolute;
   }
 
   /// The operating system's cache directory for [name]: `~/Library/Caches`
   /// on macOS, `%LOCALAPPDATA%` on Windows, `$XDG_CACHE_HOME` or `~/.cache`
-  /// elsewhere.
+  /// elsewhere. With no home directory in the environment — some service
+  /// accounts — it falls back to the current directory; set [cacheDirEnv] or
+  /// pass an override there instead.
   String defaultCacheBasePath({Map<String, String>? environment}) {
     final env = environment ?? Platform.environment;
     if (Platform.isMacOS) {

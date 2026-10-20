@@ -46,7 +46,8 @@ class JarFile {
 
     final data = ByteData.sublistView(_bytes);
     final local = entry.localHeaderOffset;
-    if (data.getUint32(local, Endian.little) != _localHeaderSignature) {
+    if (local + 30 > _bytes.length ||
+        data.getUint32(local, Endian.little) != _localHeaderSignature) {
       throw FormatException('bad local header for $name', path);
     }
     // The local header's own name and extra lengths, which may differ from
@@ -54,20 +55,29 @@ class JarFile {
     final nameLength = data.getUint16(local + 26, Endian.little);
     final extraLength = data.getUint16(local + 28, Endian.little);
     final start = local + 30 + nameLength + extraLength;
+    if (start + entry.compressedSize > _bytes.length) {
+      // A truncated download, typically.
+      throw FormatException('$name runs past the end of the file', path);
+    }
     final compressed = Uint8List.sublistView(
       _bytes,
       start,
       start + entry.compressedSize,
     );
 
-    return switch (entry.method) {
-      0 => Uint8List.fromList(compressed),
-      8 => Uint8List.fromList(ZLibDecoder(raw: true).convert(compressed)),
-      _ => throw FormatException(
-        'unsupported compression method ${entry.method} for $name',
-        path,
-      ),
-    };
+    try {
+      return switch (entry.method) {
+        0 => Uint8List.fromList(compressed),
+        8 => Uint8List.fromList(ZLibDecoder(raw: true).convert(compressed)),
+        _ => throw FormatException(
+          'unsupported compression method ${entry.method} for $name',
+          path,
+        ),
+      };
+    } on FileSystemException catch (e) {
+      // What ZLibDecoder throws for data that does not inflate.
+      throw FormatException('$name does not inflate: ${e.message}', path);
+    }
   }
 }
 
@@ -87,11 +97,13 @@ Map<String, _Entry> _readCentralDirectory(Uint8List bytes, String path) {
   final data = ByteData.sublistView(bytes);
 
   // The end-of-central-directory record is 22 bytes plus a comment of up to
-  // 65 535, at the very end.
+  // 65 535, at the very end. The signature bytes could also occur inside the
+  // comment, so a candidate counts only if its comment ends the file.
   var end = -1;
   final earliest = bytes.length - 22 - 0xffff;
   for (var i = bytes.length - 22; i >= 0 && i >= earliest; i--) {
-    if (data.getUint32(i, Endian.little) == _endOfCentralDirectorySignature) {
+    if (data.getUint32(i, Endian.little) == _endOfCentralDirectorySignature &&
+        i + 22 + data.getUint16(i + 20, Endian.little) == bytes.length) {
       end = i;
       break;
     }
@@ -110,6 +122,17 @@ Map<String, _Entry> _readCentralDirectory(Uint8List bytes, String path) {
     if (at + 46 > bytes.length ||
         data.getUint32(at, Endian.little) != _centralHeaderSignature) {
       throw FormatException('bad central directory entry $i', path);
+    }
+    if (at +
+            46 +
+            data.getUint16(at + 28, Endian.little) +
+            data.getUint16(at + 30, Endian.little) +
+            data.getUint16(at + 32, Endian.little) >
+        bytes.length) {
+      throw FormatException(
+        'central directory entry $i runs past the end',
+        path,
+      );
     }
     final flags = data.getUint16(at + 8, Endian.little);
     final method = data.getUint16(at + 10, Endian.little);

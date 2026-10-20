@@ -748,16 +748,19 @@ scope only) into `<cache>/<runtimeId>/jars/`, writes a `classpath.txt` with
 **relative** paths — so the directory can be copied into a container image as is —
 and a `manifest.json`, then verifies the jars: every required class and resource
 present, no forbidden class, and for a resource several jars ship at the same path
-(`requiredResourceContent`), the right one winning. `--verify-only`,
+(`requiredResourceContent`), a copy with the content that is needed still there.
+The runtime is built in a staging directory and renamed into place only when
+complete, so an interrupted run never leaves something that looks provisioned,
+and `--force` replaces a runtime only once the new one exists. `--verify-only`,
 `--print-classpath`, `--offline` and `--force` do what they say; the exit code
 tells a build script which step failed.
 
 `resolveClassPath` tries an explicit list, then `classPathEnv` (for deployments
 that resolve jars some other way), then the cache — `cacheDirEnv`, the operating
 system's cache directory, and the project's `.dart_tool/` for development. A
-cache for another `runtimeId`, or one with a jar missing, is skipped rather than
-loaded half-way; when nothing is found, `JavaRuntimeNotProvisioned` names the
-command to run and every place it looked.
+cache for another `runtimeId`, one with a jar missing, or one whose verification
+failed is skipped rather than loaded; when nothing is found,
+`JavaRuntimeNotProvisioned` names the command to run and every place it looked.
 
 The verifier reads jars itself — a small reader for the zip format over
 `dart:io` — so it needs neither a JVM nor a dependency.

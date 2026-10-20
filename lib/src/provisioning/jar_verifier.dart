@@ -1,6 +1,7 @@
 /// Checking a set of jars before a JVM ever loads them.
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'jar_file.dart';
@@ -59,8 +60,8 @@ class JarVerification {
     }
     for (final MapEntry(:key, :value) in wrongResourceContent.entries) {
       out.writeln(
-        '  - $key is present, but none declares "$value" — another '
-        'jar\'s file of the same name won',
+        '  - $key is present, but no copy contains "$value" — the jar '
+        'whose copy does is missing, or a merge kept another jar\'s',
       );
     }
     for (final MapEntry(:key, :value) in forbiddenFound.entries) {
@@ -86,39 +87,30 @@ JarVerification verifyJars(JavaRuntimeSpec spec, List<String> classPath) {
   var jarCount = 0;
 
   for (final path in classPath) {
-    if (FileSystemEntity.isDirectorySync(path)) {
-      final root = Directory(path).absolute.path;
-      for (final entity in Directory(root).listSync(recursive: true)) {
-        if (entity is! File) continue;
-        final name = entity.path
-            .substring(root.length + 1)
-            .replaceAll(Platform.pathSeparator, '/');
-        entries.add(name);
-        final wanted = spec.requiredResourceContent[name];
-        if (wanted != null && entity.readAsStringSync().contains(wanted)) {
-          contentFound.add(name);
-        }
-      }
-      continue;
-    }
-
-    if (!File(path).existsSync()) {
-      unreadable[path] = 'does not exist';
-      continue;
-    }
-    final JarFile jar;
     try {
-      jar = JarFile.open(path);
+      if (FileSystemEntity.isDirectorySync(path)) {
+        _scanDirectory(spec, path, entries, contentFound);
+        continue;
+      }
+      if (!File(path).existsSync()) {
+        unreadable[path] = 'does not exist';
+        continue;
+      }
+      final jar = JarFile.open(path);
+      // Read the content before counting the jar in: a jar whose entries
+      // cannot be read is unreadable, not half-counted.
+      final found = <String>{
+        for (final MapEntry(key: name, value: wanted)
+            in spec.requiredResourceContent.entries)
+          if (jar.contains(name) && jar.readText(name)!.contains(wanted)) name,
+      };
+      jarCount++;
+      entries.addAll(jar.names);
+      contentFound.addAll(found);
     } on FormatException catch (e) {
       unreadable[path] = e.message;
-      continue;
-    }
-    jarCount++;
-    entries.addAll(jar.names);
-    for (final MapEntry(key: name, value: wanted)
-        in spec.requiredResourceContent.entries) {
-      if (contentFound.contains(name) || !jar.contains(name)) continue;
-      if (jar.readText(name)?.contains(wanted) ?? false) contentFound.add(name);
+    } on FileSystemException catch (e) {
+      unreadable[path] = e.message;
     }
   }
 
@@ -148,4 +140,36 @@ JarVerification verifyJars(JavaRuntimeSpec spec, List<String> classPath) {
     },
     unreadable: unreadable,
   );
+}
+
+/// Adds a class directory's files to [entries], by their names relative to
+/// it, `/`-separated as in a jar.
+void _scanDirectory(
+  JavaRuntimeSpec spec,
+  String path,
+  Set<String> entries,
+  Set<String> contentFound,
+) {
+  var root = Directory(path).absolute.path;
+  // `classes/` and `classes` are the same root.
+  while (root.length > 1 &&
+      (root.endsWith('/') || root.endsWith(Platform.pathSeparator))) {
+    root = root.substring(0, root.length - 1);
+  }
+  for (final entity in Directory(root).listSync(recursive: true)) {
+    if (entity is! File) continue;
+    var name = entity.path.substring(root.length);
+    while (name.startsWith('/') || name.startsWith(Platform.pathSeparator)) {
+      name = name.substring(1);
+    }
+    name = name.replaceAll(Platform.pathSeparator, '/');
+    entries.add(name);
+    final wanted = spec.requiredResourceContent[name];
+    if (wanted != null &&
+        utf8
+            .decode(entity.readAsBytesSync(), allowMalformed: true)
+            .contains(wanted)) {
+      contentFound.add(name);
+    }
+  }
 }

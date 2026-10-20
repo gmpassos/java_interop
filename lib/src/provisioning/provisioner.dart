@@ -6,6 +6,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import '../jvm.dart' show classPathSeparator;
+import 'class_path_resolver.dart' show recordedClassPath;
 import 'jar_verifier.dart';
 import 'java_runtime_spec.dart';
 
@@ -61,13 +62,24 @@ class MavenFailed implements Exception {
 /// Resolves [spec]'s jars with Maven into its runtime directory, writes
 /// `classpath.txt` and `manifest.json`, and verifies the result.
 ///
-/// Already provisioned (a `jars/` directory exists) and not [force]d: only
-/// verifies. [cacheDir] overrides the cache base; [maven] is the `mvn` to
-/// run; [offline] runs it with `-o`. [log] receives progress lines.
+/// Already provisioned — `classpath.txt` and `manifest.json` both there — and
+/// not [force]d: only verifies. [cacheDir] overrides the cache base; [maven]
+/// is the `mvn` to run; [offline] runs it with `-o`. [log] receives progress
+/// lines.
+///
+/// The runtime is built in a staging directory beside the real one and
+/// renamed into place only when complete, with `manifest.json` written last.
+/// An interrupted run leaves at most a staging directory, which the next run
+/// discards — never a half-filled runtime that looks provisioned — and
+/// `--force` replaces the previous runtime only once the new one exists.
+/// A runtime that fails verification is still put in place, for inspection,
+/// but its manifest says `"verified": false` and `resolveClassPath` skips it.
 ///
 /// Maven runs `dependency:copy-dependencies` with `-DincludeScope=runtime` —
-/// the default copies every scope, test included. `classpath.txt` is written
-/// from the directory listing with relative paths, not from
+/// the default copies every scope, test included. Files are named
+/// `artifactId-version.jar`, so two artifacts that share both from different
+/// groups would collide; keep such a pair out of the POM. `classpath.txt` is
+/// written from the directory listing with relative paths, not from
 /// `dependency:build-classpath`, whose paths point into `~/.m2` and make the
 /// cache impossible to relocate.
 ///
@@ -86,15 +98,12 @@ Future<ProvisionResult> provisionJavaRuntime(
     override: cacheDir,
     environment: environment,
   );
-  final jarsDir = Directory(
-    joinPath([runtimeDir.path, JavaRuntimeSpec.jarsDirName]),
-  );
 
-  if (jarsDir.existsSync() && !force) {
+  if (!force && _isComplete(runtimeDir)) {
     log?.call('already provisioned in ${runtimeDir.path}');
     return ProvisionResult(
       runtimeDir: runtimeDir,
-      verification: verifyJars(spec, _recorded(spec, runtimeDir)),
+      verification: verifyJars(spec, recordedClassPath(runtimeDir)!),
       provisioned: false,
     );
   }
@@ -102,92 +111,136 @@ Future<ProvisionResult> provisionJavaRuntime(
   final mvn = await locateMaven(explicit: maven, environment: environment);
   log?.call('maven: $mvn');
 
-  runtimeDir.createSync(recursive: true);
-  if (jarsDir.existsSync()) jarsDir.deleteSync(recursive: true);
-  final pom = File(joinPath([runtimeDir.path, 'pom.xml']))
-    ..writeAsStringSync(await readPackagePom(spec));
+  final staging = Directory('${runtimeDir.path}.partial');
+  if (staging.existsSync()) staging.deleteSync(recursive: true);
+  staging.createSync(recursive: true);
+  try {
+    final pom = File(joinPath([staging.path, 'pom.xml']))
+      ..writeAsStringSync(await readPackagePom(spec));
 
-  log?.call('resolving dependencies...');
-  final result = await Process.run(mvn, [
-    '-B',
-    '-f',
-    pom.path,
-    if (offline) '-o',
-    '-DincludeScope=runtime',
-    '-DoutputDirectory=${JavaRuntimeSpec.jarsDirName}',
-    'dependency:copy-dependencies',
-  ], workingDirectory: runtimeDir.path);
-  if (result.exitCode != 0) {
-    throw MavenFailed(result.exitCode, '${result.stdout}${result.stderr}');
-  }
+    log?.call('resolving dependencies...');
+    final result = await _run(mvn, [
+      '-B',
+      '-f',
+      pom.path,
+      if (offline) '-o',
+      '-DincludeScope=runtime',
+      '-DoutputDirectory=${JavaRuntimeSpec.jarsDirName}',
+      'dependency:copy-dependencies',
+    ], workingDirectory: staging.path);
+    if (result.exitCode != 0) {
+      throw MavenFailed(result.exitCode, '${result.stdout}${result.stderr}');
+    }
 
-  final jars = jarsDir.existsSync()
-      ? (jarsDir
-            .listSync()
-            .whereType<File>()
-            .where((f) => f.path.endsWith('.jar'))
-            .toList()
-          ..sort((a, b) => a.path.compareTo(b.path)))
-      : <File>[];
-  if (jars.isEmpty) {
-    throw StateError('Maven copied no jars into ${jarsDir.path}');
-  }
-  String nameOf(File f) => f.uri.pathSegments.last;
+    final jarsDir = Directory(
+      joinPath([staging.path, JavaRuntimeSpec.jarsDirName]),
+    );
+    final jars = jarsDir.existsSync()
+        ? (jarsDir
+              .listSync()
+              .whereType<File>()
+              .where((f) => f.path.endsWith('.jar'))
+              .toList()
+            ..sort((a, b) => a.path.compareTo(b.path)))
+        : <File>[];
+    if (jars.isEmpty) {
+      throw StateError('Maven copied no jars into ${jarsDir.path}');
+    }
+    String nameOf(File f) => f.uri.pathSegments.last;
 
-  File(
-    joinPath([runtimeDir.path, JavaRuntimeSpec.classPathFileName]),
-  ).writeAsStringSync(
-    '${['# Written by provisionJavaRuntime. Paths are relative to this directory.', for (final jar in jars) '${JavaRuntimeSpec.jarsDirName}/${nameOf(jar)}'].join('\n')}\n',
-  );
-
-  final logging = spec.loggingProperties;
-  if (logging != null) {
     File(
-      joinPath([runtimeDir.path, JavaRuntimeSpec.loggingPropertiesFileName]),
-    ).writeAsStringSync(logging);
+      joinPath([staging.path, JavaRuntimeSpec.classPathFileName]),
+    ).writeAsStringSync(
+      '${['# Written by provisionJavaRuntime. Paths are relative to this directory.', for (final jar in jars) '${JavaRuntimeSpec.jarsDirName}/${nameOf(jar)}'].join('\n')}\n',
+    );
+
+    final logging = spec.loggingProperties;
+    if (logging != null) {
+      File(
+        joinPath([staging.path, JavaRuntimeSpec.loggingPropertiesFileName]),
+      ).writeAsStringSync(logging);
+    }
+
+    final totalBytes = jars.fold<int>(0, (sum, f) => sum + f.lengthSync());
+    final verification = verifyJars(spec, recordedClassPath(staging)!);
+
+    // Last: its presence is what makes the runtime complete.
+    File(
+      joinPath([staging.path, JavaRuntimeSpec.manifestFileName]),
+    ).writeAsStringSync(
+      '${const JsonEncoder.withIndent('  ').convert({
+        'runtimeId': spec.runtimeId,
+        ...spec.manifestExtras,
+        'jars': [
+          for (final jar in jars) {'name': nameOf(jar), 'size': jar.lengthSync()},
+        ],
+        'verified': verification.ok,
+      })}\n',
+    );
+
+    _replace(runtimeDir, replacement: staging);
+
+    log?.call(
+      '${jars.length} jars (${(totalBytes / (1024 * 1024)).toStringAsFixed(1)} '
+      'MB) in ${runtimeDir.path}',
+    );
+    return ProvisionResult(
+      runtimeDir: runtimeDir,
+      // Checked again where it now lives, so any path it reports is real.
+      verification: verifyJars(spec, recordedClassPath(runtimeDir)!),
+      provisioned: true,
+      jarCount: jars.length,
+      totalBytes: totalBytes,
+    );
+  } finally {
+    if (staging.existsSync()) staging.deleteSync(recursive: true);
   }
-
-  final verification = verifyJars(spec, _recorded(spec, runtimeDir));
-  final totalBytes = jars.fold<int>(0, (sum, f) => sum + f.lengthSync());
-
-  File(
-    joinPath([runtimeDir.path, JavaRuntimeSpec.manifestFileName]),
-  ).writeAsStringSync(
-    '${const JsonEncoder.withIndent('  ').convert({
-      'runtimeId': spec.runtimeId,
-      ...spec.manifestExtras,
-      'jars': [
-        for (final jar in jars) {'name': nameOf(jar), 'size': jar.lengthSync()},
-      ],
-      'verified': verification.ok,
-    })}\n',
-  );
-
-  log?.call(
-    '${jars.length} jars (${(totalBytes / (1024 * 1024)).toStringAsFixed(1)} '
-    'MB) in ${runtimeDir.path}',
-  );
-  return ProvisionResult(
-    runtimeDir: runtimeDir,
-    verification: verification,
-    provisioned: true,
-    jarCount: jars.length,
-    totalBytes: totalBytes,
-  );
 }
 
-/// The entries `classpath.txt` in [runtimeDir] lists, absolute, whether or
-/// not they exist — the verifier reports the missing ones.
-List<String> _recorded(JavaRuntimeSpec spec, Directory runtimeDir) {
-  final file = File(
-    joinPath([runtimeDir.path, JavaRuntimeSpec.classPathFileName]),
+/// Whether [runtimeDir] holds a finished provisioning: the class path, and
+/// the manifest written after it.
+bool _isComplete(Directory runtimeDir) =>
+    File(
+      joinPath([runtimeDir.path, JavaRuntimeSpec.classPathFileName]),
+    ).existsSync() &&
+    File(
+      joinPath([runtimeDir.path, JavaRuntimeSpec.manifestFileName]),
+    ).existsSync();
+
+/// Puts [replacement] where [target] is: the old one moved aside first, and
+/// removed only once the new one is in place.
+void _replace(Directory target, {required Directory replacement}) {
+  final previous = Directory('${target.path}.previous');
+  if (previous.existsSync()) previous.deleteSync(recursive: true);
+  if (target.existsSync()) target.renameSync(previous.path);
+  try {
+    replacement.renameSync(target.path);
+  } catch (_) {
+    // Put the old one back rather than leave nothing.
+    if (previous.existsSync() && !target.existsSync()) {
+      previous.renameSync(target.path);
+    }
+    rethrow;
+  }
+  if (previous.existsSync()) previous.deleteSync(recursive: true);
+}
+
+/// Runs [executable] — through the shell on Windows when it is a `.cmd` or
+/// `.bat`, which `Process.run` cannot start directly.
+Future<ProcessResult> _run(
+  String executable,
+  List<String> arguments, {
+  required String workingDirectory,
+}) {
+  final lower = executable.toLowerCase();
+  return Process.run(
+    executable,
+    arguments,
+    workingDirectory: workingDirectory,
+    runInShell:
+        Platform.isWindows &&
+        (lower.endsWith('.cmd') || lower.endsWith('.bat')),
   );
-  if (!file.existsSync()) return const [];
-  return [
-    for (final line in file.readAsLinesSync())
-      if (line.trim() case final e when e.isNotEmpty && !e.startsWith('#'))
-        joinPath([runtimeDir.path, e]),
-  ];
 }
 
 /// [spec]'s POM, read from its package ([JavaRuntimeSpec.pomPackageFile]
@@ -248,8 +301,10 @@ Future<String> locateMaven({
   }
 
   try {
+    // On Windows, `where mvn` lists Maven's extension-less shell script first;
+    // the `.cmd` is the one that runs.
     final which = await Process.run(Platform.isWindows ? 'where' : 'which', [
-      'mvn',
+      executable,
     ]);
     if (which.exitCode == 0) {
       final found = (which.stdout as String).trim().split('\n').first.trim();
@@ -262,8 +317,10 @@ Future<String> locateMaven({
 }
 
 /// A complete `setup_jars` command for [spec], returning the exit code:
-/// `0` ok, `1` usage, `2` Maven not found, `3` resolution failed, `4`
-/// verification failed.
+/// `0` ok, `1` usage, `2` Maven not found or not runnable, `3` the runtime
+/// could not be provisioned (Maven failed, the cache is not writable) or,
+/// for `--verify-only` and `--print-classpath`, is not there, `4`
+/// verification failed. Output is flushed before it returns.
 ///
 /// A package's whole `bin/setup_jars.dart` can be:
 ///
@@ -287,7 +344,23 @@ Future<int> runProvisioningCli(
 }) async {
   final stdoutSink = out ?? stdout;
   final stderrSink = err ?? stderr;
+  try {
+    return await _cli(spec, args, stdoutSink, stderrSink, environment);
+  } finally {
+    // `exit` right after does not wait for buffered output: a piped
+    // `--print-classpath` would come out cut.
+    await stdoutSink.flush();
+    await stderrSink.flush();
+  }
+}
 
+Future<int> _cli(
+  JavaRuntimeSpec spec,
+  List<String> args,
+  IOSink stdoutSink,
+  IOSink stderrSink,
+  Map<String, String>? environment,
+) async {
   String? cacheDir;
   String? maven;
   var offline = false;
@@ -323,7 +396,7 @@ Future<int> runProvisioningCli(
   );
 
   if (printClassPath || verifyOnly) {
-    final recorded = _recorded(spec, runtimeDir);
+    final recorded = recordedClassPath(runtimeDir) ?? const [];
     if (recorded.isEmpty) {
       stderrSink.writeln('not provisioned in ${runtimeDir.path}');
       return 3;
@@ -370,11 +443,20 @@ Future<int> runProvisioningCli(
       '.',
     );
     return 2;
+  } on ProcessException catch (e) {
+    stderrSink.writeln(
+      'Maven could not be run: ${e.executable}: ${e.message}. Is it '
+      'executable?',
+    );
+    return 2;
   } on MavenFailed catch (e) {
     stderrSink.writeln('Maven failed (exit code ${e.exitCode}):\n${e.output}');
     return 3;
   } on StateError catch (e) {
     stderrSink.writeln(e.message);
+    return 3;
+  } on FileSystemException catch (e) {
+    stderrSink.writeln('could not write the cache: $e');
     return 3;
   }
 }
