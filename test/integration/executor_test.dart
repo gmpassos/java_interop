@@ -93,6 +93,19 @@ void main() {
       );
     });
 
+    test('a constructor declaration has no name to look up', () {
+      expect(
+        () => testJvm.reflectMethod(tasks, '(String)'),
+        throwsA(
+          isA<JniError>().having(
+            (e) => e.message,
+            'message',
+            contains('no method name'),
+          ),
+        ),
+      );
+    });
+
     test('a method that does not exist is a JniError naming it', () {
       expect(
         () => testJvm.reflectMethod(tasks, 'static String missing(int)'),
@@ -351,6 +364,42 @@ void main() {
       expect(testJvm.isProxyRuntimeLoaded, isTrue);
     });
 
+    test('a monitor may be a JavaRef too', () async {
+      final executor = start();
+      final lock = autoReleaseObject(
+        testJvm.classFor('java.lang.Object').newJava('()'),
+      );
+      final result = await executor.run(
+        testJvm.reflectMethod(tasks, 'static String threadName()'),
+        [],
+        monitor: lock.ref,
+        convert: asString,
+      );
+      expect(result, startsWith('test-exec-'));
+    });
+
+    test('a monitor of any other type is an ArgumentError', () async {
+      final executor = start();
+      await expectLater(
+        executor.run(
+          testJvm.reflectMethod(tasks, 'static String threadName()'),
+          [],
+          monitor: 'not a Java object',
+          convert: asString,
+        ),
+        throwsArgumentError,
+      );
+      // Nothing was submitted.
+      expect(executor.pending, 0);
+    });
+
+    test('says what it is', () {
+      expect(
+        start(threads: 3, name: 'workers').toString(),
+        'JavaExecutor(workers, threads: 3)',
+      );
+    });
+
     test('threads below 1 are rejected', () {
       expect(
         () => JavaExecutor.start(testJvm, threads: 0),
@@ -424,6 +473,11 @@ void main() {
             ]),
       );
       expect(echoed.asArray(JniType.int_).toList(), [4, 5]);
+    });
+
+    test('an array already of that type is returned as it is', () {
+      final ints = autoReleaseObject(JavaArray.ofInts(testJvm, [1]));
+      expect(identical(ints.asArray(JniType.int_), ints), isTrue);
     });
 
     test('refuses an object that is not that array', () {

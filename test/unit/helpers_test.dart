@@ -16,6 +16,14 @@ void main() {
       ]);
     });
 
+    test('says what it builds', () {
+      expect(
+        const JvmOptions(maxHeapMb: 64).toString(),
+        'JvmOptions[-Djava.awt.headless=true, -Dfile.encoding=UTF-8, '
+        '-Dsun.jnu.encoding=UTF-8, -Xmx64m]',
+      );
+    });
+
     test('every setting, in order', () {
       expect(
         const JvmOptions(

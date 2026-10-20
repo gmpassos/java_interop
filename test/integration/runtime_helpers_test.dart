@@ -72,6 +72,18 @@ void main() {
     });
   });
 
+  test('info and preflight reports say what they found', () {
+    expect(testJvm.info().toString(), startsWith('Java '));
+    expect(
+      testJvm.preflight(classes: {'java.lang.String': 'jdk'}).toString(),
+      'JvmPreflight(ok)',
+    );
+    expect(
+      testJvm.preflight(classes: {'com.example.Gone': 'gone.jar'}).toString(),
+      allOf(contains('com.example.Gone'), contains('attached:')),
+    );
+  });
+
   test('info reports the running VM', () {
     final info = testJvm.info();
     expect(info.javaVersion, isNotEmpty);
@@ -100,6 +112,18 @@ void main() {
     }
     // A JDK always ships at least the logical families.
     expect(testJvm.availableFontFamilies(), contains('Dialog'));
+  });
+
+  test('releaseCachedClasses releases the cached enum constants too', () {
+    const timeUnit = 'java.util.concurrent.TimeUnit';
+    final before = testJvm.enumFor(timeUnit, 'MINUTES');
+    testJvm.releaseCachedClasses();
+
+    // The old reference is gone; the next call resolves a fresh one.
+    expect(before.ref.isReleased, isTrue);
+    final after = testJvm.enumFor(timeUnit, 'MINUTES');
+    expect(identical(before, after), isFalse);
+    expect(after.javaToString(), 'MINUTES');
   });
 
   test('enumFor caches one reference per constant', () {
@@ -158,6 +182,16 @@ void main() {
 
       expect(loggable.info, isFalse);
       expect(loggable.severe, isTrue);
+    });
+
+    test('values survive as written: line breaks and tabs', () {
+      testJvm.configureJavaLogging(
+        properties: {'com.example.multi': 'one\ntwo\r\n\tthree'},
+      );
+      expect(
+        testJvm.javaLoggingProperty('com.example.multi'),
+        'one\ntwo\r\n\tthree',
+      );
     });
 
     test('values survive as written: backslashes and accents', () {
