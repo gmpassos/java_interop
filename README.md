@@ -139,6 +139,11 @@ does not expose).
   `configureJavaLogging`, `JavaExceptionClassifier` and `mapJavaExceptions`,
   `preflight`, `info`, `availableFontFamilies`, cached `enumFor`, and
   `DateTime` ↔ `java.time`.
+- **Getting the jars onto the machine.** `package:java_interop/provisioning.dart`:
+  Maven resolves a package's jars once, at build time, into a versioned and
+  relocatable cache; `resolveClassPath` finds them at runtime, and
+  `verifyJars` checks them without a JVM. Like the binding, it depends on
+  nothing beyond the Dart SDK.
 - **An escape hatch.** `Jvm.fnSlot(index)` reaches any JNI function this binding
   does not wrap.
 - **Tested.** 560+ tests across unit and integration suites, covering every
@@ -691,6 +696,71 @@ String render(String id) => mapJavaExceptions(
 `InternalError` or `UnsatisfiedLinkError` anywhere in the chain — after which the
 VM, and so the process, should be replaced. `missingClass` reads the class out of
 a `NoClassDefFoundError`.
+
+### Getting the jars onto the machine
+
+A package that calls Java libraries needs their jars wherever it runs.
+`package:java_interop/provisioning.dart` — a separate import, so programs that
+get their jars another way never load it — does it the way that holds up in
+deployment: **Maven resolves the jars once, at build time, into a cache
+directory, and that directory is the deployable artifact.** No Maven at runtime,
+no network, and a `dart compile exe` binary works as long as the directory is
+there.
+
+Describe the runtime once:
+
+```dart
+// lib/src/java_runtime.dart
+const reportsRuntime = JavaRuntimeSpec(
+  name: 'my_reports',                     // your package
+  runtimeId: 'v1-jasper6.21.0',           // change it when the POM changes
+  pomPackageFile: 'tool/runtime_pom.xml', // a POM listing the dependencies
+  cacheDirEnv: 'MY_REPORTS_JAVA_CACHE',
+  classPathEnv: 'MY_REPORTS_JAVA_CLASSPATH',
+  setupCommand: 'dart run my_reports:setup_jars',
+  requiredClasses: {
+    'net.sf.jasperreports.engine.JasperCompileManager': 'jasperreports',
+  },
+  forbiddenClasses: {'jakarta.xml.bind.JAXBContext': 'jakarta.xml.bind-api'},
+);
+```
+
+give it a setup command:
+
+```dart
+// bin/setup_jars.dart
+Future<void> main(List<String> args) async =>
+    exit(await runProvisioningCli(reportsRuntime, args));
+```
+
+and find the jars at startup:
+
+```dart
+final classPath = resolveClassPath(reportsRuntime);
+final jvm = Jvm.startOrAttach(
+  classPath: classPath.entries,
+  vmOptions: const JvmOptions().build(),
+);
+```
+
+`dart run my_reports:setup_jars` runs `mvn dependency:copy-dependencies` (runtime
+scope only) into `<cache>/<runtimeId>/jars/`, writes a `classpath.txt` with
+**relative** paths — so the directory can be copied into a container image as is —
+and a `manifest.json`, then verifies the jars: every required class and resource
+present, no forbidden class, and for a resource several jars ship at the same path
+(`requiredResourceContent`), the right one winning. `--verify-only`,
+`--print-classpath`, `--offline` and `--force` do what they say; the exit code
+tells a build script which step failed.
+
+`resolveClassPath` tries an explicit list, then `classPathEnv` (for deployments
+that resolve jars some other way), then the cache — `cacheDirEnv`, the operating
+system's cache directory, and the project's `.dart_tool/` for development. A
+cache for another `runtimeId`, or one with a jar missing, is skipped rather than
+loaded half-way; when nothing is found, `JavaRuntimeNotProvisioned` names the
+command to run and every place it looked.
+
+The verifier reads jars itself — a small reader for the zip format over
+`dart:io` — so it needs neither a JVM nor a dependency.
 
 ### Dropping to raw JNI
 
