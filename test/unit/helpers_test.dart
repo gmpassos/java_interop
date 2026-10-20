@@ -126,6 +126,16 @@ void main() {
       );
     });
 
+    test('a class whose initializer failed is not missing', () {
+      expect(
+        JavaException(
+          className: 'java.lang.NoClassDefFoundError',
+          message: 'Could not initialize class com.example.Config',
+        ).missingClass,
+        isNull,
+      );
+    });
+
     test('missingClass reads the class from the message, slashed or not', () {
       expect(
         JavaException(

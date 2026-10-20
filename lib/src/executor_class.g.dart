@@ -11,8 +11,7 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
-/// The classes, by binary name, outer classes first — the order to define
-/// them in.
+/// The classes, by binary name, for `jvm.defineClasses`.
 final Map<String, Uint8List> executorClasses = {
   for (final e in _executorClassesBase64.entries) e.key: base64.decode(e.value),
 };

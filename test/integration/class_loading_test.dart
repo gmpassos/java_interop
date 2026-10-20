@@ -88,7 +88,59 @@ void main() {
       );
     });
 
-    test('defineClasses releases what it defined when one fails', () {
+    test(
+      'defineClasses takes classes in any order, supertypes after subtypes',
+      () {
+        final work = Directory.systemTemp.createTempSync('define_order_');
+        addTearDown(() => work.deleteSync(recursive: true));
+        // An anonymous class implementing a nested interface, and a top-level
+        // class extending one that sorts after it.
+        File('${work.path}/x/Foo.java')
+          ..createSync(recursive: true)
+          ..writeAsStringSync('''
+package x;
+public class Foo {
+    public interface Cb { String call(); }
+    public static String run() {
+        return new Cb() { public String call() { return "ran"; } }.call();
+    }
+}
+class Alpha extends Zeta {}
+class Zeta {}
+''');
+        final javac = Process.runSync(findJdkTool('javac')!, [
+          '--release',
+          '11',
+          '-d',
+          '${work.path}/out',
+          '${work.path}/x/Foo.java',
+        ]);
+        expect(javac.exitCode, 0, reason: '${javac.stderr}');
+
+        Uint8List bytes(String name) =>
+            File('${work.path}/out/x/$name.class').readAsBytesSync();
+        // Every subtype before its supertype.
+        final classes = testJvm.defineClasses(loader(), {
+          r'x.Foo$1': bytes(r'Foo$1'),
+          'x.Alpha': bytes('Alpha'),
+          'x.Foo': bytes('Foo'),
+          r'x.Foo$Cb': bytes(r'Foo$Cb'),
+          'x.Zeta': bytes('Zeta'),
+        });
+        addTearDown(() {
+          for (final clazz in classes.values) {
+            clazz.release();
+          }
+        });
+
+        expect(classes.keys, hasLength(5));
+        expect(classes['x.Foo']!.callJavaStatic('static String run()'), 'ran');
+      },
+      skip: findJdkTool('javac') == null ? 'no javac' : null,
+    );
+
+    test('defineClasses rethrows the failure of a class that cannot be '
+        'defined', () {
       const name = _fixtures;
       expect(
         () => testJvm.defineClasses(loader(), {

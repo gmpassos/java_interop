@@ -115,10 +115,19 @@ String? findJavaHome({Map<String, String>? environment}) {
 }
 
 /// The JDK home that [libjvm] lives under — the inverse of [libjvmUnder].
+///
+/// Throws an [ArgumentError] for a path that is not laid out that way.
 String javaHomeOf(String libjvm) {
   final separator = Platform.isWindows ? r'\' : '/';
   final parts = libjvm.split(separator);
   // <home>/lib/server/libjvm.{so,dylib}, or <home>\bin\server\jvm.dll.
+  if (parts.length < 4 || parts[parts.length - 2] != 'server') {
+    throw ArgumentError.value(
+      libjvm,
+      'libjvm',
+      'not <home>/lib/server/<libjvm> (or <home>\\bin\\server\\jvm.dll)',
+    );
+  }
   return parts.sublist(0, parts.length - 3).join(separator);
 }
 

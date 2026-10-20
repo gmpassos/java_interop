@@ -676,9 +676,10 @@ letting a generic wrapper yield to a more specific cause:
 ```dart
 const classifier = JavaExceptionClassifier<Failure>([
   ('com.example.lib.ValidationException', Failure.rejected),
-  ('com.example.lib.LibraryException', Failure.rejected),
-  ('java.net.', Failure.network),
-], wrappers: {Failure.rejected});
+  ('com.example.lib.LibraryException', Failure.library),
+  ('java.net.SocketTimeoutException', Failure.network),
+  ('java.net.ConnectException', Failure.network),
+], wrappers: {Failure.library});
 
 String render(String id) => mapJavaExceptions(
   () => reports.callJavaAs<String>('String render(String)', [id]),

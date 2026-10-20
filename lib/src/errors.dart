@@ -143,6 +143,11 @@ class JavaException implements Exception {
   /// The JVM writes it in the message, sometimes slashed
   /// (`com/example/Foo`), sometimes inside a longer sentence; this is that
   /// name, which is what a "your class path lacks X" error should show.
+  ///
+  /// Not for `NoClassDefFoundError: Could not initialize class X`: X *is* on
+  /// the class path, and its static initializer failed earlier — a jar is not
+  /// what needs fixing. That one is `null` here; on JDK 17+ its cause is the
+  /// `ExceptionInInitializerError` with the reason.
   String? get missingClass {
     for (final (name, text) in [
       (className, message),
@@ -150,6 +155,9 @@ class JavaException implements Exception {
     ]) {
       if (name != 'java.lang.NoClassDefFoundError' &&
           name != 'java.lang.ClassNotFoundException') {
+        continue;
+      }
+      if (text != null && text.startsWith('Could not initialize class')) {
         continue;
       }
       final match = _qualifiedName.firstMatch(text ?? '');
@@ -220,25 +228,30 @@ Future<T> mapJavaExceptionsAsync<T>(
 /// holds nothing more specific.
 ///
 /// ```dart
-/// enum Failure { rejected, network, certificate }
+/// enum Failure { rejected, library, network, certificate }
 ///
 /// const classifier = JavaExceptionClassifier<Failure>(
 ///   [
 ///     ('com.example.lib.ValidationException', Failure.rejected),
-///     ('com.example.lib.LibraryException', Failure.rejected),
-///     ('java.net.', Failure.network),
+///     ('com.example.lib.LibraryException', Failure.library),
+///     ('java.net.SocketTimeoutException', Failure.network),
+///     ('java.net.ConnectException', Failure.network),
 ///     ('javax.net.ssl.', Failure.network),
 ///     ('java.security.KeyStoreException', Failure.certificate),
 ///   ],
-///   wrappers: {Failure.rejected},
+///   wrappers: {Failure.library},
 /// );
 ///
 /// switch (classifier.classify(exception)) { … }
 /// ```
 ///
 /// A rule matches a class whose name equals its prefix or starts with it, so
-/// `'java.net.'` covers a package. Rules are tried in order, so put the more
-/// specific ones first.
+/// `'javax.net.ssl.'` covers a package. Rules are tried in order, so put the
+/// more specific ones first. Only the generic kind is a wrapper: were the
+/// specific `rejected` one too, any network exception in its cause chain
+/// would turn a rejection into something to retry. And name classes rather
+/// than whole packages where a package mixes meanings — `java.net.` also holds
+/// `URISyntaxException`, which no retry fixes.
 class JavaExceptionClassifier<K extends Object> {
   const JavaExceptionClassifier(this.rules, {this.wrappers = const {}});
 

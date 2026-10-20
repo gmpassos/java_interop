@@ -132,33 +132,51 @@ void main() {
       );
     });
 
-    test('applies to a logger Java creates afterwards', () {
+    test('applies to a logger Java creates afterwards', () async {
       testJvm.configureJavaLogging(levels: {'com.example.later': 'SEVERE'});
 
-      // A logger created by Java code — here through a static JDK call on the
-      // LogManager, not the caller-sensitive Logger.getLogger.
-      final level = testJvm.localFrame(() {
-        final manager = testJvm
-            .classFor('java.util.logging.LogManager')
-            .callJavaStaticAs<JavaObject>(
-              'static java.util.logging.LogManager getLogManager()',
-            );
-        final logger = testJvm
-            .classFor('java.util.logging.Logger')
-            .callJavaStaticAs<JavaObject>(
-              'static java.util.logging.Logger getAnonymousLogger()',
-            );
-        logger.callJava('void setParent(java.util.logging.Logger)', [
-          manager.callJavaAs<JavaObject>(
-            'java.util.logging.Logger getLogger(String)',
-            [''],
-          ),
-        ]);
-        return manager.callJavaAs<String?>('String getProperty(String)', [
-          'com.example.later.level',
-        ]);
-      }, capacity: 16);
-      expect(level, 'SEVERE');
+      // `Logger.getLogger` is caller-sensitive and fails through JNI; run
+      // reflectively on a JVM thread, it has a Java caller. The logger is
+      // created now, after the configuration.
+      final executor = JavaExecutor.start(testJvm);
+      addTearDown(executor.shutdown);
+      final loggable = await executor.run(
+        testJvm.reflectMethod(
+          'java.util.logging.Logger',
+          'static java.util.logging.Logger getLogger(String)',
+        ),
+        ['com.example.later.child'],
+        convert: (logger) {
+          final level = testJvm.classFor('java.util.logging.Level');
+          bool at(String name) => logger!.callJavaAs<bool>(
+            'boolean isLoggable(java.util.logging.Level)',
+            [level.getJavaStaticField('java.util.logging.Level $name')],
+          );
+          return (info: at('INFO'), severe: at('SEVERE'));
+        },
+      );
+
+      expect(loggable.info, isFalse);
+      expect(loggable.severe, isTrue);
+    });
+
+    test('values survive as written: backslashes and accents', () {
+      testJvm.configureJavaLogging(
+        properties: {
+          'com.example.path': r'C:\logs\app.log',
+          'com.example.format': 'Olá — %5\$s%n',
+          'com.example.key with=sign': 'yes',
+        },
+      );
+      expect(
+        testJvm.javaLoggingProperty('com.example.path'),
+        r'C:\logs\app.log',
+      );
+      expect(
+        testJvm.javaLoggingProperty('com.example.format'),
+        'Olá — %5\$s%n',
+      );
+      expect(testJvm.javaLoggingProperty('com.example.key with=sign'), 'yes');
     });
   });
 
@@ -210,6 +228,21 @@ void main() {
       final today = testJvm.javaToday();
       final now = testJvm.javaNow();
       expect(DateTime(now.year, now.month, now.day), today);
+    });
+
+    test('wallClockAsUtc keeps every field of a wall-clock value', () {
+      // A local 00:30 that day does not exist in São Paulo (spring forward,
+      // before 2019): as a local DateTime it would already be 01:30. As UTC
+      // fields, in and out, it always exists.
+      final value = DateTime.utc(2018, 11, 4, 0, 30);
+      final back = testJvm.localFrame(
+        () => testJvm.fromJavaTime(
+          testJvm.toJavaLocalDateTime(value),
+          wallClockAsUtc: true,
+        ),
+        capacity: 8,
+      );
+      expect(back, value);
     });
 
     test('anything else is a JniError', () {

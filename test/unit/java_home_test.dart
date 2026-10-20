@@ -8,6 +8,11 @@ import 'package:test/test.dart';
 
 void main() {
   group('findJavaHome', () {
+    test('javaHomeOf refuses a path not laid out as a JDK', () {
+      expect(() => javaHomeOf('libjvm.so'), throwsArgumentError);
+      expect(() => javaHomeOf('/a/b/c/libjvm.so'), throwsArgumentError);
+    });
+
     test('javaHomeOf inverts libjvmUnder', () {
       final home = Platform.isWindows ? r'C:\jdk-21' : '/opt/jdk-21';
       expect(javaHomeOf(libjvmUnder(home)), home);

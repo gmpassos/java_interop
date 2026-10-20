@@ -18,15 +18,21 @@ every embedder ends up writing.
   `shutdown` completes the calls that finished, fails those still running past
   its timeout, and releases the proxy machinery if it was its last user.
 - **`jvm.reflectMethod(className, 'Ret name(T1, T2)')`.** Returns a
-  `java.lang.reflect.Method` by Java declaration. It looks through the
-  superclasses too, and caches the result for the isolate. The method is made
+  `java.lang.reflect.Method` by Java declaration: name, parameter types,
+  return type and `static` all have to match. It looks through the
+  superclasses and the interfaces too (default methods), and caches the result
+  for the isolate. `releaseReflectedMethods` releases the cache, and the
+  embedded class behind it when no executor is running. The method is made
   accessible **from Java**: since JDK 17, `setAccessible(true)` called through
   JNI from a thread with no Java frame only works for public members of public
   classes, so a package-private class on the class path could not be called
   reflectively from Dart at all.
 - **`JavaArray.objectsFrom`** builds the `Object[]` reflection takes. It boxes
   values, and turns typed lists into primitive arrays and a `JavaClass` into its
-  `Class` object. **`JavaObject.asArray`** re-types an array that came back
+  `Class` object. Given the `parameterTypes`, it boxes each number as its
+  parameter wants, since `Method.invoke` never narrows (an `Integer` for a
+  `short` fails); `JavaExecutor.run` passes them. **`JavaObject.asArray`**
+  re-types an array that came back
   declared as `Object`, after checking that it is one.
 - **`JvmProxies.releaseProxyRuntimeIfIdle`.** For a library that uses a proxy
   internally: an open proxy runtime keeps the isolate alive.
@@ -34,11 +40,13 @@ every embedder ends up writing.
 ### Java helpers without a jar
 
 - **`dart run java_interop:embed_java`** compiles Java sources into a Dart file
-  that maps class names to class files (nested and anonymous classes included,
-  outer classes first). By default it uses `--release 11`.
+  that maps class names to class files (nested and anonymous classes
+  included). By default it uses `--release 11` and `-Xlint:all`; `--werror` is
+  opt-in.
 - **`jvm.newClassLoader()`, `jvm.defineClass`, `jvm.defineClasses`** load those
-  classes at runtime, each set in a loader of its own. The proxy machinery now
-  uses them instead of private copies.
+  classes at runtime, each set in a loader of its own. `defineClasses` takes
+  them in any order, deferring a class whose supertype is not defined yet. The
+  proxy machinery now uses them instead of private copies.
 - **`findJavaHome`, `findJdkTool('javac')`, `javaHomeOf`.** These run the same
   search as `searchLibjvm`, so a build tool and the binding agree on which JDK
   is in use.
@@ -58,7 +66,10 @@ every embedder ends up writing.
   translate exceptions at one place and keep the stack trace.
   **`JavaException.isFatal`** (an `OutOfMemoryError`, `StackOverflowError`,
   `InternalError` or `UnsatisfiedLinkError` anywhere in the chain) and
-  **`missingClass`** are new.
+  **`missingClass`** are new. `missingClass` ignores "Could not initialize
+  class", whose class is present but whose static initializer failed. The
+  `configureJavaLogging` text is escaped as `.properties`, so backslashes and
+  non-ASCII values survive.
 - **`jvm.preflight(classes:, resources:)`.** Reports every missing class and
   resource at once, and says when the likely cause is a JVM this process
   attached to but did not create. **`jvm.info()`** reports the version, vendor,
@@ -71,6 +82,8 @@ every embedder ends up writing.
   `toJavaInstant`, `fromJavaTime` (`LocalDate`, `LocalDateTime`, `Instant`,
   `ZonedDateTime`, `OffsetDateTime`), `javaToday` and `javaNow`. Wall-clock
   types map to a local `DateTime` with the same fields; instants map to UTC.
+  `wallClockAsUtc: true` returns wall-clock values as UTC fields instead, for
+  a time the host's zone skips at a daylight-saving change.
 
 ## 1.4.1
 

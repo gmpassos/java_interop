@@ -48,10 +48,48 @@ void main() {
     });
 
     test('finds a private method of a superclass', () {
-      final method = testJvm.reflectMethod(tasks, 'String inherited()');
+      final method = testJvm.reflectMethod(tasks, 'static String inherited()');
       expect(
         method.callJavaAs<String>('String toGenericString()'),
         contains('TasksBase.inherited'),
+      );
+    });
+
+    test('static and the return type must match too', () {
+      // `greet` is an instance method returning String.
+      expect(
+        () => testJvm.reflectMethod(tasks, 'static String greet(String)'),
+        throwsA(isA<JniError>()),
+      );
+      expect(
+        () => testJvm.reflectMethod(tasks, 'int greet(String)'),
+        throwsA(isA<JniError>()),
+      );
+      expect(
+        testJvm.reflectMethod(tasks, 'String greet(String)'),
+        isA<JavaObject>(),
+      );
+    });
+
+    test('finds a default method of an interface', () {
+      final stream = testJvm.reflectMethod(
+        'java.util.ArrayList',
+        'java.util.stream.Stream stream()',
+      );
+      expect(
+        stream.callJavaAs<String>('String toGenericString()'),
+        contains('java.util.Collection.stream()'),
+      );
+    });
+
+    test('releaseReflectedMethods leaves reflection working afterwards', () {
+      testJvm.reflectMethod(tasks, 'static String threadName()');
+      testJvm.releaseReflectedMethods();
+      expect(
+        testJvm
+            .reflectMethod(tasks, 'static String threadName()')
+            .callJavaAs<bool>('boolean isAccessible()'),
+        isTrue,
       );
     });
 
@@ -319,6 +357,18 @@ void main() {
         throwsArgumentError,
       );
     });
+  });
+
+  test('numbers are boxed as the parameters want: short and float', () async {
+    final executor = start();
+    // Method.invoke would refuse an Integer for the short and a Double for
+    // the float: "argument type mismatch".
+    final result = await executor.run(
+      testJvm.reflectMethod(tasks, 'static short halve(short, float)'),
+      [10, 0.5],
+      convert: (result) => result!.toDart(),
+    );
+    expect(result, 5);
   });
 
   group('JavaArray.objectsFrom', () {

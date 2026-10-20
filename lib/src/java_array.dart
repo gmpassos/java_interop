@@ -109,11 +109,30 @@ class JavaArray extends JavaObject {
   /// (`Int32List` an `int[]`, `Int64List` a `long[]`, `Float64List` a
   /// `double[]`, …). Any other `List` is ambiguous — `Object[]`? `String[]`?
   /// — and throws: build it as a [JavaArray] first.
-  factory JavaArray.objectsFrom(Jvm jvm, List<Object?> values) {
-    final temporaries = <JavaArray>[];
+  ///
+  /// `Method.invoke` widens a box (an `Integer` to a `long` parameter) but
+  /// never narrows one, so an `Integer` for a `short`, `byte` or `char`
+  /// parameter, or a `Double` for a `float`, fails with "argument type
+  /// mismatch". Pass [parameterTypes] — the parameters' `Class.getName()`, as
+  /// `int` or `java.lang.Short` — and each number is boxed as its parameter
+  /// wants instead. [JavaExecutor.run] does.
+  factory JavaArray.objectsFrom(
+    Jvm jvm,
+    List<Object?> values, {
+    List<String>? parameterTypes,
+  }) {
+    final temporaries = <JavaRef>[];
     try {
       return JavaArray.of(jvm, JniType.object, [
-        for (final value in values) _objectElement(jvm, value, temporaries),
+        for (var i = 0; i < values.length; i++)
+          _objectElement(
+            jvm,
+            values[i],
+            temporaries,
+            parameterTypes != null && i < parameterTypes.length
+                ? _wrapperForTypeName(parameterTypes[i])
+                : null,
+          ),
       ]);
     } finally {
       for (final temporary in temporaries) {
@@ -218,12 +237,21 @@ class JavaArray extends JavaObject {
       isNull ? 'JavaArray(null)' : 'JavaArray($descriptor[$length])';
 }
 
-/// Reduces a [JavaObject] or [JavaClass] to the reference underneath, so the
-/// raw array layer never has to know about the ergonomic types.
 /// [value] as an element of an `Object[]`, for [JavaArray.objectsFrom]. A
-/// primitive array made here goes into [temporaries], for the caller to release
-/// once the `Object[]` holds its own reference.
-Object? _objectElement(Jvm jvm, Object? value, List<JavaArray> temporaries) {
+/// primitive array or box made here goes into [temporaries], for the caller to
+/// release once the `Object[]` holds its own reference. A number is boxed as
+/// [wrapper] when one is given.
+Object? _objectElement(
+  Jvm jvm,
+  Object? value,
+  List<JavaRef> temporaries,
+  JavaWrapper? wrapper,
+) {
+  if (wrapper != null && (value is num || value is bool)) {
+    final box = jvm.boxAs(wrapper, value!);
+    temporaries.add(box);
+    return box;
+  }
   final String? descriptor = switch (value) {
     Uint8List() || Int8List() => JniType.byte,
     Int16List() => JniType.short,
@@ -236,7 +264,7 @@ Object? _objectElement(Jvm jvm, Object? value, List<JavaArray> temporaries) {
   };
   if (descriptor != null) {
     final array = JavaArray.of(jvm, descriptor, value as List<Object?>);
-    temporaries.add(array);
+    temporaries.add(array.ref);
     return array.ref;
   }
   if (value is List) {
@@ -248,6 +276,31 @@ Object? _objectElement(Jvm jvm, Object? value, List<JavaArray> temporaries) {
   return _unwrap(value);
 }
 
+/// The wrapper a parameter of type [name] (`Class.getName()`: `short`,
+/// `java.lang.Short`) takes a number as, or `null` for any other type.
+JavaWrapper? _wrapperForTypeName(String name) {
+  for (final wrapper in JavaWrapper.values) {
+    if (wrapper.className == name ||
+        _primitiveNames[wrapper.primitive] == name) {
+      return wrapper;
+    }
+  }
+  return null;
+}
+
+const _primitiveNames = {
+  JniType.boolean: 'boolean',
+  JniType.byte: 'byte',
+  JniType.char: 'char',
+  JniType.short: 'short',
+  JniType.int_: 'int',
+  JniType.long: 'long',
+  JniType.float: 'float',
+  JniType.double_: 'double',
+};
+
+/// Reduces a [JavaObject] or [JavaClass] to the reference underneath, so the
+/// raw array layer never has to know about the ergonomic types.
 Object? _unwrap(Object? value) {
   if (value is JavaObject) return value.ref;
   if (value is JavaClass) return value.ref;

@@ -45,22 +45,29 @@ extension JvmJavaLogging on Jvm {
     bool console = true,
     Map<String, String> properties = const {},
   }) {
-    final text = [
-      if (console) ...[
-        'handlers=java.util.logging.ConsoleHandler',
-        'java.util.logging.ConsoleHandler.level=ALL',
-        'java.util.logging.ConsoleHandler.formatter='
+    final entries = {
+      if (console) ...{
+        'handlers': 'java.util.logging.ConsoleHandler',
+        'java.util.logging.ConsoleHandler.level': 'ALL',
+        'java.util.logging.ConsoleHandler.formatter':
             'java.util.logging.SimpleFormatter',
-      ],
-      '.level=$rootLevel',
-      for (final MapEntry(:key, :value) in levels.entries) '$key.level=$value',
-      for (final MapEntry(:key, :value) in properties.entries) '$key=$value',
+      },
+      '.level': rootLevel,
+      for (final MapEntry(:key, :value) in levels.entries) '$key.level': value,
+      ...properties,
+    };
+    // `readConfiguration` parses `.properties`: ISO-8859-1, with `\` as an
+    // escape. Escaped here, a Windows path or an accented format survives,
+    // and the text is pure ASCII.
+    final text = [
+      for (final MapEntry(:key, :value) in entries.entries)
+        '${_escapeProperty(key, isKey: true)}=${_escapeProperty(value)}',
     ].join('\n');
 
     localFrame(() {
       final stream = classFor(
         'java.io.ByteArrayInputStream',
-      ).newJava('(byte[])', [utf8.encode(text)]);
+      ).newJava('(byte[])', [ascii.encode(text)]);
       _logManager().callJava('void readConfiguration(java.io.InputStream)', [
         stream,
       ]);
@@ -82,6 +89,38 @@ extension JvmJavaLogging on Jvm {
         _logManager().callJavaAs<String?>('String getProperty(String)', [key]),
     capacity: 8,
   );
+
+  /// [text] as `java.util.Properties.store` would write it: `\`, line breaks
+  /// and anything outside printable ASCII escaped, plus `=`, `:`, `#`, `!`
+  /// and spaces in a key, and a leading space in a value.
+  static String _escapeProperty(String text, {bool isKey = false}) {
+    final out = StringBuffer();
+    for (var i = 0; i < text.length; i++) {
+      final unit = text.codeUnitAt(i);
+      final char = text[i];
+      switch (char) {
+        case r'\':
+          out.write(r'\\');
+        case '\n':
+          out.write(r'\n');
+        case '\r':
+          out.write(r'\r');
+        case '\t':
+          out.write(r'\t');
+        case '=' || ':' || '#' || '!' when isKey:
+          out.write('\\$char');
+        case ' ' when isKey || i == 0:
+          out.write(r'\ ');
+        default:
+          if (unit < 0x20 || unit > 0x7e) {
+            out.write('\\u${unit.toRadixString(16).padLeft(4, '0')}');
+          } else {
+            out.write(char);
+          }
+      }
+    }
+    return out.toString();
+  }
 
   JavaObject _logManager() =>
       classFor('java.util.logging.LogManager').callJavaStaticAs<JavaObject>(

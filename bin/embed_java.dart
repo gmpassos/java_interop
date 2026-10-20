@@ -8,9 +8,9 @@
 /// ```
 ///
 /// The output declares `final Map<String, Uint8List> <name>`: every class
-/// `javac` produced — nested and anonymous ones included — by binary name,
-/// outer classes first. Commit it, and run the tool again after editing the
-/// Java.
+/// `javac` produced — nested and anonymous ones included — by binary name, in
+/// a stable order (`defineClasses` takes them in any order). Commit it, and
+/// run the tool again after editing the Java.
 ///
 /// A JDK is needed here and nowhere else: the package that embeds the classes
 /// ships no jar and asks its users for no build step.
@@ -23,6 +23,8 @@
 ///   --release <n>         `javac --release`; default 11, the class file
 ///                         version every supported JVM can load
 ///   --classpath <path>    for sources that use types beyond the JDK's
+///   --werror              fail on any javac warning (`-Xlint:all` is always
+///                         on; newer JDKs add lints, so this is opt-in)
 /// ```
 library;
 
@@ -36,6 +38,7 @@ void main(List<String> args) {
   String? name;
   var release = '11';
   String? classPath;
+  var werror = false;
   final sources = <String>[];
 
   for (var i = 0; i < args.length; i++) {
@@ -53,6 +56,8 @@ void main(List<String> args) {
         release = value();
       case '--classpath':
         classPath = value();
+      case '--werror':
+        werror = true;
       case '-h' || '--help':
         stdout.writeln(_usage);
         return;
@@ -89,7 +94,7 @@ void main(List<String> args) {
       '--release',
       release,
       '-Xlint:all',
-      '-Werror',
+      if (werror) '-Werror',
       if (classPath != null) ...['-classpath', classPath],
       '-d',
       work.path,
@@ -100,6 +105,8 @@ void main(List<String> args) {
       stderr.write(compile.stderr);
       _fail('javac failed');
     }
+    // Warnings, when javac succeeded anyway.
+    stderr.write(compile.stderr);
 
     final classes = <String, List<int>>{};
     for (final entity in work.listSync(recursive: true)) {
@@ -112,7 +119,8 @@ void main(List<String> args) {
     }
     if (classes.isEmpty) _fail('javac produced no class files');
 
-    // Outer classes first: `Foo` before `Foo$1`.
+    // A stable order, outer classes first (`Foo` before `Foo$1`) for reading;
+    // `defineClasses` itself takes them in any order.
     final names = classes.keys.toList()..sort(_outerFirst);
 
     final version = Process.runSync(javac, ['-version']);
@@ -150,8 +158,7 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
-/// The classes, by binary name, outer classes first — the order to define
-/// them in.
+/// The classes, by binary name, for `jvm.defineClasses`.
 final Map<String, Uint8List> $name = {
   for (final e in _${name}Base64.entries) e.key: base64.decode(e.value),
 };
@@ -160,7 +167,11 @@ const _${name}Base64 = <String, String>{
 $entries};
 ''');
 
-    final format = Process.runSync('dart', ['format', output.path]);
+    // The Dart running this tool, not whichever one is first on the PATH.
+    final format = Process.runSync(Platform.resolvedExecutable, [
+      'format',
+      output.path,
+    ]);
     if (format.exitCode != 0) {
       stderr.write(format.stderr);
       _fail('dart format failed');

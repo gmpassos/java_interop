@@ -65,6 +65,11 @@ class Tasks extends TasksBase {
         return out.toString();
     }
 
+    /** {@code Method.invoke} never narrows an {@code Integer} to a {@code short}. */
+    static short halve(short value, float factor) {
+        return (short) (value * factor);
+    }
+
     static String overloaded(int value) {
         return "int";
     }

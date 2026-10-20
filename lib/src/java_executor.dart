@@ -23,7 +23,11 @@ extension JvmReflection on Jvm {
   /// [declaration] is written as Java, like every other call in this binding:
   /// `'String greet(String)'`, `'static int add(int, int)'`. The method is
   /// looked for among [className]'s declared methods, then its superclasses',
-  /// so a private, package-private or inherited method is found too.
+  /// then its interfaces' — so a private, package-private, inherited or
+  /// default method is found too. The name, the parameter types, the return
+  /// type and `static` must all match: `'static int greet(String)'` does not
+  /// find an instance `String greet(String)`. As elsewhere, an unqualified
+  /// type name is `java.lang`: write `java.util.stream.Stream`, not `Stream`.
   ///
   /// The method is made accessible from Java rather than through JNI. Since
   /// JDK 17, `setAccessible(true)` called through JNI on a thread with no Java
@@ -55,10 +59,15 @@ extension JvmReflection on Jvm {
       for (final type in parsed.signature.parameters)
         _classGetName(type.descriptor),
     ];
+    final returns = _classGetName(parsed.signature.returns.descriptor);
+    final wantStatic = _staticModifier.hasMatch(
+      declaration.substring(0, declaration.indexOf('(')),
+    );
 
     final found = localFrame(() {
-      var type = JavaObject(this, classFor(className).ref);
-      while (!type.isNull) {
+      final modifier = classFor('java.lang.reflect.Modifier');
+
+      JavaObject? match(JavaObject type) {
         final declared = type.callJavaAs<JavaArray>(
           'java.lang.reflect.Method[] getDeclaredMethods()',
         );
@@ -78,42 +87,99 @@ extension JvmReflection on Jvm {
                 parameters[j];
           }
           if (!matches) continue;
-
-          final accessible = _executorSupport.executorClass
-              .callJavaStaticAs<JavaObject>(
-                'java.lang.reflect.Method accessible(java.lang.reflect.Method)',
-                [method],
-              );
-          return JavaObject(this, accessible.ref.toGlobal());
+          final returnType = method.callJavaAs<JavaObject>(
+            'Class getReturnType()',
+          );
+          if (returnType.callJavaAs<String>('String getName()') != returns) {
+            continue;
+          }
+          final isStatic = modifier.callJavaStaticAs<bool>(
+            'static boolean isStatic(int)',
+            [method.callJavaAs<int>('int getModifiers()')],
+          );
+          if (isStatic != wantStatic) continue;
+          return method;
         }
+        return null;
+      }
+
+      // The class and its superclasses first, then every interface they
+      // implement — where a default method lives.
+      final interfaces = <JavaObject>[];
+      var type = JavaObject(this, classFor(className).ref);
+      JavaObject? method;
+      while (method == null && !type.isNull) {
+        method = match(type);
+        interfaces.addAll(
+          type.callJavaAs<JavaArray>('Class[] getInterfaces()').toList().cast(),
+        );
         type = type.callJavaAs<JavaObject>('Class getSuperclass()');
       }
-      return null;
-    }, capacity: 64);
+      final seen = <String>{};
+      while (method == null && interfaces.isNotEmpty) {
+        final interface = interfaces.removeAt(0);
+        if (!seen.add(interface.callJavaAs<String>('String getName()'))) {
+          continue;
+        }
+        method = match(interface);
+        interfaces.addAll(
+          interface
+              .callJavaAs<JavaArray>('Class[] getInterfaces()')
+              .toList()
+              .cast(),
+        );
+      }
+      if (method == null) return null;
+
+      final accessible = _executorSupport.executorClass
+          .callJavaStaticAs<JavaObject>(
+            'java.lang.reflect.Method accessible(java.lang.reflect.Method)',
+            [method],
+          );
+      return JavaObject(this, accessible.ref.toGlobal());
+    }, capacity: 256);
 
     if (found == null) {
       throw JniError(
-        'no method $declaration in $className or its superclasses',
+        'no method $declaration in $className, its superclasses or its '
+        'interfaces',
       );
     }
+    _parameterTypes[found] = parameters;
     return methods[key] = found;
   }
 
-  /// Releases every method [reflectMethod] cached in this isolate.
+  /// Releases every method [reflectMethod] cached in this isolate — and, when
+  /// no [JavaExecutor] of this isolate is running, the class loader and the
+  /// embedded class that reflection and executors share, so a short-lived
+  /// isolate leaves nothing behind. Both come back on the next use.
   void releaseReflectedMethods() {
     final methods = _reflected[this];
-    if (methods == null) return;
-    for (final method in methods.values) {
-      method.release();
+    if (methods != null) {
+      for (final method in methods.values) {
+        method.release();
+      }
+      methods.clear();
     }
-    methods.clear();
+    final support = _support[this];
+    if (support != null && support.liveExecutors == 0) {
+      support.executorClass.release();
+      support.loader.release();
+      _support[this] = null;
+    }
   }
 }
 
 final _reflected = Expando<Map<String, JavaObject>>('java_interop.reflected');
 
+/// The `Class.getName()` of each parameter of a method [reflectMethod]
+/// returned, for [JavaExecutor.run] to box its arguments by.
+final _parameterTypes = Expando<List<String>>('java_interop.parameterTypes');
+
+final _staticModifier = RegExp(r'(^|\s)static\s');
+
 /// `Class.getName()` of a JNI type descriptor: `int`, `java.lang.String`,
-/// `[I`, `[Ljava.lang.String;`.
+/// `[I`, `[Ljava.lang.String;`, `void`.
 String _classGetName(String descriptor) {
   if (descriptor.startsWith('[')) return descriptor.replaceAll('/', '.');
   if (descriptor.startsWith('L')) {
@@ -130,7 +196,8 @@ String _classGetName(String descriptor) {
     'J' => 'long',
     'F' => 'float',
     'D' => 'double',
-    _ => throw JniError('not a parameter type: "$descriptor"'),
+    'V' => 'void',
+    _ => throw JniError('not a Java type: "$descriptor"'),
   };
 }
 
@@ -142,6 +209,10 @@ class _ExecutorSupport {
   /// Held so the class is not collected: a class lives as long as its loader.
   final JavaObject loader;
   final JavaClass executorClass;
+
+  /// Executors started and not shut down: while there are any, the support
+  /// cannot be released.
+  int liveExecutors = 0;
 }
 
 final _support = Expando<_ExecutorSupport>('java_interop.executor');
@@ -204,6 +275,7 @@ class JavaExecutor {
     this._executor,
     this._done,
     this._waiting,
+    this._support,
   );
 
   /// Starts [threads] JVM threads named `<name>-1`, `<name>-2`, ….
@@ -241,7 +313,16 @@ class JavaExecutor {
         );
         return JavaObject(jvm, local.ref.toGlobal(), support.executorClass);
       }, capacity: 16);
-      return JavaExecutor._(jvm, name, threads, executor, done, waiting);
+      support.liveExecutors++;
+      return JavaExecutor._(
+        jvm,
+        name,
+        threads,
+        executor,
+        done,
+        waiting,
+        support,
+      );
     } catch (_) {
       done.release();
       jvm.releaseProxyRuntimeIfIdle();
@@ -262,6 +343,9 @@ class JavaExecutor {
 
   /// The tasks submitted and not yet reported done, by id.
   final Map<int, Completer<void>> _waiting;
+
+  /// Kept from release while this executor runs.
+  final _ExecutorSupport _support;
 
   bool _shutDown = false;
 
@@ -297,7 +381,12 @@ class JavaExecutor {
 
     final completer = Completer<void>();
     final id = jvm.localFrame(() {
-      final array = JavaArray.objectsFrom(jvm, args);
+      // Boxed as the parameters want: `Method.invoke` never narrows.
+      final array = JavaArray.objectsFrom(
+        jvm,
+        args,
+        parameterTypes: _parameterTypes[method],
+      );
       final id =
           _executor.callJava(
                 'long submit(java.lang.reflect.Method, Object, Object[], Object)',
@@ -362,10 +451,13 @@ class JavaExecutor {
   ///
   /// Also releases the executor's [JavaProxy] and, if it was the last proxy of
   /// this isolate, the proxy machinery — which would otherwise keep the
-  /// isolate alive (see [JvmProxies.releaseProxyRuntimeIfIdle]).
+  /// isolate alive (see [JvmProxies.releaseProxyRuntimeIfIdle]). A call that
+  /// finishes after [timeout] then notifies a released proxy, which
+  /// [JvmProxies.droppedProxyCalls] counts.
   bool shutdown({Duration timeout = const Duration(seconds: 60)}) {
     if (_shutDown) return true;
     _shutDown = true;
+    _support.liveExecutors--;
 
     final finished =
         _executor.callJava('boolean shutdown(long)', [timeout.inMilliseconds])

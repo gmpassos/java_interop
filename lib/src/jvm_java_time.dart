@@ -19,6 +19,17 @@ import 'jvm_diagnostics.dart';
 /// * `Instant`, `ZonedDateTime` and `OffsetDateTime` are points in time: they
 ///   come back as a UTC [DateTime] for the same instant.
 ///
+/// One exception to "the same fields": a wall-clock time that does not exist
+/// in the *host's* zone — the hour skipped when daylight saving starts — is
+/// not a valid local [DateTime], and Dart moves it forward (`00:30` on a
+/// spring-forward midnight becomes `01:30`; on such a day even a `LocalDate`
+/// comes back at `01:00`). Pass `wallClockAsUtc: true` to [fromJavaTime] to
+/// get wall-clock values as UTC [DateTime]s instead: every field preserved,
+/// with `isUtc` meaning "no zone" rather than "UTC". The same goes the other
+/// way: build the [DateTime] you hand [toJavaLocalDateTime] with
+/// `DateTime.utc`, since a local one for a skipped hour was already moved
+/// when Dart made it.
+///
 /// Objects returned are local references: create them inside a
 /// [JvmLocalFrames.localFrame] or release them.
 extension JvmJavaTime on Jvm {
@@ -57,10 +68,11 @@ extension JvmJavaTime on Jvm {
 
   /// [value] — a `LocalDate`, `LocalDateTime`, `Instant`, `ZonedDateTime` or
   /// `OffsetDateTime` — as a [DateTime], by the rule above. Nanoseconds are
-  /// truncated to microseconds, Dart's precision.
-  DateTime fromJavaTime(JavaObject value) {
+  /// truncated to microseconds, Dart's precision. [wallClockAsUtc]: see above.
+  DateTime fromJavaTime(JavaObject value, {bool wallClockAsUtc = false}) {
+    final wallClock = wallClockAsUtc ? DateTime.utc : DateTime.new;
     if (value.isInstanceOf(classFor('java.time.LocalDate'))) {
-      return DateTime(
+      return wallClock(
         value.callJavaAs<int>('int getYear()'),
         value.callJavaAs<int>('int getMonthValue()'),
         value.callJavaAs<int>('int getDayOfMonth()'),
@@ -68,7 +80,7 @@ extension JvmJavaTime on Jvm {
     }
     if (value.isInstanceOf(classFor('java.time.LocalDateTime'))) {
       final nano = value.callJavaAs<int>('int getNano()');
-      return DateTime(
+      return wallClock(
         value.callJavaAs<int>('int getYear()'),
         value.callJavaAs<int>('int getMonthValue()'),
         value.callJavaAs<int>('int getDayOfMonth()'),

@@ -108,22 +108,39 @@ extension JvmClassLoading on Jvm {
     return JavaClass(this, global, JniType.classNameToDotted(slashed));
   }
 
-  /// Defines every class of [classes] in [loader], in iteration order, and
-  /// returns them by name, as global references the caller releases.
+  /// Defines every class of [classes] in [loader], and returns them by name,
+  /// as global references the caller releases.
   ///
-  /// The map `embed_java` writes is in the right order already: outer classes
-  /// before their nested ones. A class whose superclass is also in [classes]
-  /// must come after it, since the JVM resolves the superclass while defining.
-  /// On a failure, the classes already defined are released before the error
-  /// is rethrown.
+  /// Any order works. The JVM resolves a class's superclass and interfaces
+  /// while defining it, so one whose supertype is also in [classes] can only
+  /// be defined after it — an anonymous `Foo$1` implementing `Foo$Callback`,
+  /// or `Alpha extends Zeta`. A class that fails with `NoClassDefFoundError`
+  /// is set aside and tried again once the others are in, until a pass makes
+  /// no progress; then that error is thrown. On any failure, the classes
+  /// already defined are released before the error is rethrown.
   Map<String, JavaClass> defineClasses(
     JavaObject loader,
     Map<String, Uint8List> classes,
   ) {
     final defined = <String, JavaClass>{};
     try {
-      for (final entry in classes.entries) {
-        defined[entry.key] = defineClass(loader, entry.key, entry.value);
+      var pending = classes.entries.toList();
+      while (pending.isNotEmpty) {
+        final deferred = <MapEntry<String, Uint8List>>[];
+        JavaException? lastFailure;
+        for (final entry in pending) {
+          try {
+            defined[entry.key] = defineClass(loader, entry.key, entry.value);
+          } on JavaException catch (e) {
+            // A supertype not defined yet. Anything else is not going to get
+            // better on a second try.
+            if (e.className != 'java.lang.NoClassDefFoundError') rethrow;
+            deferred.add(entry);
+            lastFailure = e;
+          }
+        }
+        if (deferred.length == pending.length) throw lastFailure!;
+        pending = deferred;
       }
       return defined;
     } catch (_) {
