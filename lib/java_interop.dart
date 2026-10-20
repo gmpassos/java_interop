@@ -39,8 +39,16 @@ export 'src/boxing.dart' show JavaWrapper, JvmBoxing;
 export 'src/errors.dart';
 export 'src/java_array.dart' show JavaArray;
 export 'src/java_class.dart' show JavaClass, JavaObject;
+export 'src/java_executor.dart' show JavaExecutor, JvmReflection;
 export 'src/java_home.dart'
-    show defaultLibjvmPath, searchLibjvm, libjvmUnder, LibjvmSearch;
+    show
+        defaultLibjvmPath,
+        searchLibjvm,
+        libjvmUnder,
+        LibjvmSearch,
+        findJavaHome,
+        findJdkTool,
+        javaHomeOf;
 export 'src/java_ref.dart' show JavaRef, JavaRefKind, JvmLocalFrames;
 export 'src/java_signature.dart'
     show JType, JSig, JavaMethod, JavaField, jsig, jtype;
@@ -49,9 +57,18 @@ export 'src/jvalue.dart' show JValue, floatFromBits, doubleFromBits;
 export 'src/jvm.dart' show Jvm, classPathSeparator;
 export 'src/jvm_arrays.dart' show JvmArrays;
 export 'src/jvm_calls.dart' show JvmCalls;
+export 'src/jvm_class_loading.dart' show JvmClassLoading;
 export 'src/jvm_classes.dart' show JvmClasses;
 export 'src/jvm_diagnostics.dart'
-    show JavaRefTypeReport, JvmClassRegistry, JvmDiagnostics;
+    show
+        JavaRefTypeReport,
+        JvmClassRegistry,
+        JvmDiagnostics,
+        JvmInfo,
+        JvmPreflight;
+export 'src/jvm_java_time.dart' show JvmJavaTime;
+export 'src/jvm_logging.dart' show JvmJavaLogging;
+export 'src/jvm_options.dart' show JvmOptions;
 export 'src/jvm_monitors.dart' show JvmMonitors;
 export 'src/jvm_fields.dart' show JvmFields;
 export 'src/proxy.dart' show JavaProxy, JavaProxyCall, JvmProxies;

@@ -7,8 +7,10 @@
 library;
 
 import 'dart:ffi';
+import 'dart:io';
 
 import 'errors.dart';
+import 'java_array.dart';
 import 'java_class.dart';
 import 'java_ref.dart';
 import 'jni_slots.dart';
@@ -66,7 +68,119 @@ extension JvmClassRegistry on Jvm {
       javaClass.release();
     }
     _classes.clear();
+    final enums = _enumRegistry[this];
+    if (enums != null) {
+      for (final constant in enums.values) {
+        constant.release();
+      }
+      enums.clear();
+    }
   }
+
+  /// The enum constant [constant] of [className], resolved once and reused.
+  ///
+  /// [JavaClass.enumConstant] makes a new global reference on every call; code
+  /// that passes `TimeUnit.SECONDS` or a library's `Environment.PRODUCTION`
+  /// around on every request leaks one each time unless it releases each. This
+  /// holds one per constant instead, owned by the registry like [classFor]'s
+  /// classes: do not release it. [releaseCachedClasses] releases them too.
+  JavaObject enumFor(String className, String constant) {
+    final enums = _enumRegistry[this] ??= <String, JavaObject>{};
+    return enums.putIfAbsent(
+      '$className#$constant',
+      () => classFor(className).enumConstant(constant),
+    );
+  }
+}
+
+final _enumRegistry = Expando<Map<String, JavaObject>>('java_interop.enums');
+
+/// What [JvmDiagnostics.info] reports about the running VM.
+class JvmInfo {
+  const JvmInfo({
+    required this.javaVersion,
+    required this.javaVendor,
+    required this.javaHome,
+    required this.vmName,
+    required this.classPath,
+    required this.attached,
+  });
+
+  /// `java.version`, e.g. `21.0.4`.
+  final String? javaVersion;
+
+  /// `java.vendor`.
+  final String? javaVendor;
+
+  /// `java.home`.
+  final String? javaHome;
+
+  /// `java.vm.name`, e.g. `OpenJDK 64-Bit Server VM`.
+  final String? vmName;
+
+  /// `java.class.path`, as the VM has it — which, when [attached], is the
+  /// class path of whoever created the VM, not the one this process asked for.
+  final String? classPath;
+
+  /// `true` when this process attached to a VM it did not create
+  /// ([Jvm.isAttached]).
+  final bool attached;
+
+  @override
+  String toString() =>
+      'Java $javaVersion ($javaVendor, $vmName)'
+      '${attached ? ', attached' : ''}';
+}
+
+/// What [JvmDiagnostics.preflight] found.
+class JvmPreflight {
+  const JvmPreflight({
+    required this.missingClasses,
+    required this.missingResources,
+    required this.attached,
+  });
+
+  /// Class name → what should have provided it, for each class that did not
+  /// resolve.
+  final Map<String, String> missingClasses;
+
+  /// Resource paths that did not resolve.
+  final List<String> missingResources;
+
+  /// Whether the VM was already running when this process asked for one
+  /// ([Jvm.isAttached]).
+  final bool attached;
+
+  /// `true` when everything resolved.
+  bool get ok => missingClasses.isEmpty && missingResources.isEmpty;
+
+  /// The likely reason, when it failed on a VM this process did not create:
+  /// [Jvm.startOrAttach] ignores its `classPath` when it attaches, so the
+  /// classes were never on the VM's class path to begin with, however right
+  /// the jars are.
+  bool get likelyForeignVm => !ok && attached;
+
+  /// Throws a [JniLookupError] describing the failure, when there is one.
+  void throwIfFailed() {
+    if (ok) return;
+    final lines = [
+      for (final MapEntry(:key, :value) in missingClasses.entries)
+        'class $key (expected from $value)',
+      for (final resource in missingResources) 'resource $resource',
+    ];
+    throw JniLookupError(
+      'class path',
+      '${lines.join('; ')}'
+          '${likelyForeignVm ? ' — this process attached to a JVM it did not '
+                    'create, and that JVM\'s class path is the one in effect' : ''}',
+    );
+  }
+
+  @override
+  String toString() => ok
+      ? 'JvmPreflight(ok)'
+      : 'JvmPreflight(missing classes: ${missingClasses.keys.toList()}, '
+            'missing resources: $missingResources, attached: $attached)';
 }
 
 /// Environment and class-path diagnostics.
@@ -161,6 +275,94 @@ extension JvmDiagnostics on Jvm {
           '${entry.key} (expected from ${entry.value})',
         );
       }
+    }
+  }
+
+  /// Checks [classes] and [resources] at once, and reports rather than throws.
+  ///
+  /// [requireClasses] and [resourceExists] in one pass, for startup: the
+  /// report has every class and resource that is missing, not only the first,
+  /// and says when the likely cause is that this process attached to a VM
+  /// someone else created — whose class path is the one in effect.
+  ///
+  /// ```dart
+  /// jvm.preflight(
+  ///   classes: {'org.apache.axiom.om.OMAbstractFactory': 'axiom-api'},
+  ///   resources: ['META-INF/axiom.xml'],
+  /// ).throwIfFailed();
+  /// ```
+  JvmPreflight preflight({
+    Map<String, String> classes = const {},
+    Iterable<String> resources = const [],
+  }) {
+    final missingClasses = <String, String>{};
+    for (final MapEntry(key: name, value: artifact) in classes.entries) {
+      try {
+        findClass(name).release();
+      } on JniLookupError {
+        missingClasses[name] = artifact;
+      }
+    }
+    return JvmPreflight(
+      missingClasses: missingClasses,
+      missingResources: [
+        for (final resource in resources)
+          if (!resourceExists(resource)) resource,
+      ],
+      attached: isAttached,
+    );
+  }
+
+  /// The running VM's version, vendor, home and class path.
+  JvmInfo info() => JvmInfo(
+    javaVersion: systemProperty('java.version'),
+    javaVendor: systemProperty('java.vendor'),
+    javaHome: systemProperty('java.home'),
+    vmName: systemProperty('java.vm.name'),
+    classPath: systemProperty('java.class.path'),
+    attached: isAttached,
+  );
+
+  /// The font families Java can render with — which is what text in a PDF or
+  /// an image report can use.
+  ///
+  /// Works headless: font metrics need no display. Empty when AWT cannot start
+  /// at all (a JRE without the desktop module, or a broken font
+  /// configuration), rather than throwing: a caller checking for one family
+  /// wants "not there", not a stack trace.
+  ///
+  /// A family a report asks for and this lacks is rendered with a fallback
+  /// font — silently, with different metrics, which is how a PDF ends up with
+  /// overflowing fields. Checking at startup turns that into an error.
+  ///
+  /// On macOS the VM must be headless (`-Djava.awt.headless=true`, which
+  /// [JvmOptions] sets by default): there, a non-headless AWT waits for the
+  /// process's main thread, which an embedded VM never gets, and the call
+  /// would hang forever. It throws a [JniError] saying so instead.
+  Set<String> availableFontFamilies() {
+    if (Platform.isMacOS && systemProperty('java.awt.headless') != 'true') {
+      throw JniError(
+        'availableFontFamilies needs a headless JVM on macOS, where a '
+        'non-headless AWT waits forever for the main thread. Start the JVM '
+        'with -Djava.awt.headless=true (JvmOptions does by default).',
+      );
+    }
+    try {
+      return localFrame(() {
+        final environment = classFor('java.awt.GraphicsEnvironment')
+            .callJavaStaticAs<JavaObject>(
+              'static java.awt.GraphicsEnvironment '
+              'getLocalGraphicsEnvironment()',
+            );
+        final names = environment.callJavaAs<JavaArray>(
+          'String[] getAvailableFontFamilyNames()',
+        );
+        return {for (final name in names.toList()) name as String};
+      }, capacity: 16);
+    } on JavaException {
+      return const {};
+    } on JniError {
+      return const {};
     }
   }
 

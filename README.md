@@ -124,9 +124,24 @@ does not expose).
 - **Monitors.** `jvm.synchronized(object, body)` takes the same lock Java's
   `synchronized` does, which matters as soon as a Dart callback can mutate state
   Java's other threads read.
+- **Slow Java calls off the isolate.** `JavaExecutor` runs a call on a pool of
+  JVM threads and returns a `Future`, so a 30-second network call or a report
+  render no longer freezes the isolate's event loop. Exceptions come back as the
+  same `JavaException`; a `monitor` serializes the calls that share state.
+- **Java helpers without a jar.** `dart run java_interop:embed_java` compiles a
+  Java source into a Dart file; `jvm.defineClasses` loads it at runtime into a
+  `jvm.newClassLoader()`.
+- **Reflection by declaration.** `jvm.reflectMethod(className, 'int add(int,
+  int)')` finds a `java.lang.reflect.Method` — private, package-private or
+  inherited — and makes it accessible from Java, which JDK 17+ refuses through
+  JNI.
+- **Embedding helpers.** `JvmOptions` (headless, UTF-8, heap, time zone…),
+  `configureJavaLogging`, `JavaExceptionClassifier` and `mapJavaExceptions`,
+  `preflight`, `info`, `availableFontFamilies`, cached `enumFor`, and
+  `DateTime` ↔ `java.time`.
 - **An escape hatch.** `Jvm.fnSlot(index)` reaches any JNI function this binding
   does not wrap.
-- **Tested.** 467 tests across unit and integration suites, covering every
+- **Tested.** 560+ tests across unit and integration suites, covering every
   primitive type, both directions of every conversion, arrays and boxing,
   signature parsing, the reference lifecycle, the exception paths including cause
   chains and cycles, proxies across threads and isolates, and the multi-isolate
@@ -463,16 +478,23 @@ otherwise have inferred.
 | `ResourceBundle.getBundle(name)` | `ResourceBundle.getBundle(name, locale, loader)` |
 | `DriverManager.getConnection(url)` | a `DataSource` obtained explicitly |
 | `MethodHandles.lookup()` | `MethodHandles.privateLookupIn(someClass, …)` |
+| `method.setAccessible(true)` on a non-public member | `jvm.reflectMethod(...)`, which calls it from Java |
 
 Configuring `java.util.logging` is the one most projects hit, because a library
-that logs at `INFO` will otherwise flood stderr:
+that logs at `INFO` will otherwise flood stderr. `configureJavaLogging` does it
+through the `LogManager`:
 
 ```dart
 // Not Logger.getLogger(...).setLevel(...) — that throws under JNI.
-final manager = jvm.classFor('java.util.logging.LogManager');
-final properties = utf8.encode('org.noisy.library.level=WARNING\n');
-// ... hand `properties` to readConfiguration via a ByteArrayInputStream ...
+jvm.configureJavaLogging(levels: {'org.noisy.library': 'WARNING'});
+jvm.javaLogLevel('org.noisy.library'); // 'WARNING'
 ```
+
+`setAccessible` is the other: since JDK 17, called through JNI with no Java
+frame, it is checked as if the caller were in no module and only works for
+public members of public classes. `reflectMethod` makes the method accessible
+from a small embedded Java class instead, whose module the class path's packages
+are open to.
 
 ### References and frames
 
@@ -552,6 +574,123 @@ There is no jar. The one Java class this needs
 cosmetic: `RegisterNatives` binds to a *class*, so a shared class would let the
 last isolate to bind steal every other isolate's callbacks — and a callback
 entered from the wrong isolate's thread aborts the process.
+
+### Slow calls on JVM threads
+
+Every JNI call blocks the calling isolate until it returns. For a getter that is
+nothing; for a 30-second network call or a report render, it freezes the
+isolate's event loop for as long as it takes — and with it every request the
+isolate serves. `JavaExecutor` runs the call on a pool of JVM threads instead:
+
+```dart
+final executor = JavaExecutor.start(jvm, threads: 4, name: 'reports');
+final render = jvm.reflectMethod(
+  'com.example.Reports',
+  'static byte[] render(String)',
+);
+
+final pdf = await executor.run(
+  render,
+  ['monthly'],
+  convert: (result) => result!.asArray(JniType.byte).toBytes(),
+);
+```
+
+The call is a reflective `Method` (`reflectMethod`), with a `target` for an
+instance method. Arguments are converted by `JavaArray.objectsFrom`. `convert`
+runs on the isolate once the call is done, in a local frame, and turns the
+result into a Dart value. A Java exception fails the future with the same
+`JavaException` a direct call would have thrown.
+
+Up to `threads` calls run at the same time. Java code with global state is still
+Java code with global state: pass the same `monitor` to the calls that touch it,
+and the JVM thread holds it for the whole call, exactly as `synchronized`:
+
+```dart
+await executor.run(sign, [xml], monitor: jvm.classFor('com.example.Signer'),
+    convert: (r) => r!.toDart() as String);
+```
+
+The threads are daemons, and their context class loader is the system loader —
+JAXB, StAX and `ServiceLoader` look implementations up through it. Completion
+comes back through a `LongConsumer` proxy, whose `void` calls from JVM threads
+are queued onto the event loop, so no thread ever waits for Dart. `shutdown`
+completes the calls that finished, fails the ones still running past its
+timeout, and releases the proxy machinery if the executor was its last user.
+
+### Java helpers without a jar
+
+Some things are only possible from Java — a thread pool, holding a monitor on
+another thread, a caller-sensitive API — and shipping a jar for a twenty-line
+class is out of proportion. Compile it into a Dart file instead:
+
+```sh
+dart run java_interop:embed_java \
+  --out lib/src/helper_classes.g.dart --name helperClasses \
+  java/com/example/Helper.java
+```
+
+and define it at runtime:
+
+```dart
+final loader = jvm.newClassLoader();          // keep it: the classes live as long
+final classes = jvm.defineClasses(loader, helperClasses);
+final helper = classes['com.example.Helper']!;
+```
+
+The class lands in a loader of its own, a child of the system loader: it can use
+every public class on the class path, but it is in a runtime package of its own,
+so it cannot reach package-private members there. `--release 11` (the default)
+keeps the class file loadable by every supported JVM. This is how the binding
+ships `DartInvocationHandler` and `JavaExecutor`.
+
+### Embedding helpers
+
+What every program that embeds a JVM ends up writing:
+
+```dart
+final jvm = Jvm.startOrAttach(
+  classPath: jars,
+  vmOptions: const JvmOptions(maxHeapMb: 512, timeZone: 'UTC').build(),
+);
+
+jvm.preflight(
+  classes: {'org.apache.axiom.om.OMAbstractFactory': 'axiom-api'},
+  resources: ['META-INF/axiom.xml'],
+).throwIfFailed();        // every missing class and resource, at startup
+
+jvm.info();               // Java 21.0.4 (Eclipse Adoptium, OpenJDK 64-Bit Server VM)
+jvm.availableFontFamilies().contains('DejaVu Sans');
+jvm.enumFor('java.util.concurrent.TimeUnit', 'SECONDS'); // cached, not leaked
+jvm.toJavaLocalDateTime(DateTime.now());
+```
+
+`JvmOptions` is headless by default. On macOS, a JVM that is not headless waits
+forever for the process's main thread the first time AWT runs — font metrics
+included — and an embedded JVM never gets it.
+
+Libraries rewrap exceptions, so the class that explains a failure is usually in
+the cause chain. A `JavaExceptionClassifier` sorts them into your own kinds,
+letting a generic wrapper yield to a more specific cause:
+
+```dart
+const classifier = JavaExceptionClassifier<Failure>([
+  ('com.example.lib.ValidationException', Failure.rejected),
+  ('com.example.lib.LibraryException', Failure.library),
+  ('java.net.SocketTimeoutException', Failure.network),
+  ('java.net.ConnectException', Failure.network),
+], wrappers: {Failure.library});
+
+String render(String id) => mapJavaExceptions(
+  () => reports.callJavaAs<String>('String render(String)', [id]),
+  (e) => e.isFatal ? JvmBroken(e) : ReportException(classifier.classify(e), e),
+);
+```
+
+`isFatal` is true for an `OutOfMemoryError`, `StackOverflowError`,
+`InternalError` or `UnsatisfiedLinkError` anywhere in the chain — after which the
+VM, and so the process, should be replaced. `missingClass` reads the class out of
+a `NoClassDefFoundError`.
 
 ### Dropping to raw JNI
 
@@ -669,9 +808,10 @@ trip. Dart strings are already UTF-16, so this binding uses `NewString` /
 - **Some JDK APIs are caller-sensitive** and fail over JNI because there is no
   Java frame to inspect. See the section above for the ones that matter and what
   to call instead.
-- **No custom class loaders.** Classes come from the class path the VM was
-  created with. (The proxy machinery creates one for itself, to give each
-  isolate's handler class a distinct identity, but it loads nothing from it.)
+- **Class loaders define, they do not search.** `newClassLoader` and
+  `defineClasses` load classes from bytes you hand them; there is no loader
+  over a jar or directory added after startup. The class path the VM was
+  created with is the one jars come from.
 - **`JavaObject` does not auto-release.** Ownership is explicit; use
   `release()` or `localFrame`. There is no finalizer, because a `JNIEnv*` is
   thread-affine and a Dart finalizer offers no guarantee about which thread it

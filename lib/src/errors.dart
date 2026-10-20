@@ -115,6 +115,61 @@ class JavaException implements Exception {
     return null;
   }
 
+  /// The JVM errors after which the VM — and so this process, which cannot
+  /// start another — should not be trusted with more work.
+  ///
+  /// An `OutOfMemoryError` can leave any object half-built, a
+  /// `StackOverflowError` can leave a lock held or a static initializer
+  /// failed for good, and an `InternalError` or `UnsatisfiedLinkError` means
+  /// the VM or a native library is broken. HotSpot cannot be restarted inside a
+  /// process, so the right response is for a supervisor to replace the
+  /// process; [isFatal] is how to notice.
+  static const fatalClassNames = {
+    'java.lang.OutOfMemoryError',
+    'java.lang.StackOverflowError',
+    'java.lang.InternalError',
+    'java.lang.UnsatisfiedLinkError',
+  };
+
+  /// `true` when this exception, or any of its [causes], is one of
+  /// [fatalClassNames] — including when a library wrapped it.
+  bool get isFatal =>
+      fatalClassNames.contains(className) ||
+      causes.any((cause) => fatalClassNames.contains(cause.className));
+
+  /// The class a `NoClassDefFoundError` or `ClassNotFoundException` — this
+  /// one or one in [causes] — says is missing, dotted; `null` otherwise.
+  ///
+  /// The JVM writes it in the message, sometimes slashed
+  /// (`com/example/Foo`), sometimes inside a longer sentence; this is that
+  /// name, which is what a "your class path lacks X" error should show.
+  ///
+  /// Not for `NoClassDefFoundError: Could not initialize class X`: X *is* on
+  /// the class path, and its static initializer failed earlier — a jar is not
+  /// what needs fixing. That one is `null` here; on JDK 17+ its cause is the
+  /// `ExceptionInInitializerError` with the reason.
+  String? get missingClass {
+    for (final (name, text) in [
+      (className, message),
+      for (final cause in causes) (cause.className, cause.message),
+    ]) {
+      if (name != 'java.lang.NoClassDefFoundError' &&
+          name != 'java.lang.ClassNotFoundException') {
+        continue;
+      }
+      if (text != null && text.startsWith('Could not initialize class')) {
+        continue;
+      }
+      final match = _qualifiedName.firstMatch(text ?? '');
+      if (match != null) return match.group(1)!.replaceAll('/', '.');
+    }
+    return null;
+  }
+
+  static final _qualifiedName = RegExp(
+    r'([a-zA-Z_$][\w$]*(?:[./][a-zA-Z_$][\w$]*)+)',
+  );
+
   @override
   String toString() {
     final head = message == null || message!.isEmpty
@@ -122,5 +177,115 @@ class JavaException implements Exception {
         : 'JavaException: $className: $message';
     if (causes.isEmpty) return head;
     return '$head\n${causes.map((c) => '  caused by: $c').join('\n')}';
+  }
+}
+
+/// Runs [body], turning a [JavaException] it throws into what [map] returns —
+/// thrown with the original stack trace.
+///
+/// The one place an API translates Java failures into its own exception
+/// types, instead of a `try`/`catch` in every method:
+///
+/// ```dart
+/// String render(String id) => mapJavaExceptions(
+///   () => reports.callJavaAs<String>('String render(String)', [id]),
+///   (e) => ReportException(e.message ?? e.className),
+/// );
+/// ```
+T mapJavaExceptions<T>(
+  T Function() body,
+  Object Function(JavaException exception) map,
+) {
+  try {
+    return body();
+  } on JavaException catch (e, stackTrace) {
+    Error.throwWithStackTrace(map(e), stackTrace);
+  }
+}
+
+/// [mapJavaExceptions] for an asynchronous [body], such as a
+/// `JavaExecutor.run`.
+Future<T> mapJavaExceptionsAsync<T>(
+  Future<T> Function() body,
+  Object Function(JavaException exception) map,
+) async {
+  try {
+    return await body();
+  } on JavaException catch (e, stackTrace) {
+    Error.throwWithStackTrace(map(e), stackTrace);
+  }
+}
+
+/// Sorts [JavaException]s into an application's own kinds by Java class name,
+/// looking through the cause chain.
+///
+/// Libraries rewrap: `catch (Exception e) { throw new LibraryException(e); }`.
+/// So the outer class is often the least informative one, and deciding on it
+/// alone turns a network timeout (retry it) into a business rejection (don't).
+/// A classifier walks the exception and then its [JavaException.causes], and
+/// picks the first kind that is *not* one of [wrappers] — the kinds that only
+/// say "the library failed". A wrapper kind is the answer only when the chain
+/// holds nothing more specific.
+///
+/// ```dart
+/// enum Failure { rejected, library, network, certificate }
+///
+/// const classifier = JavaExceptionClassifier<Failure>(
+///   [
+///     ('com.example.lib.ValidationException', Failure.rejected),
+///     ('com.example.lib.LibraryException', Failure.library),
+///     ('java.net.SocketTimeoutException', Failure.network),
+///     ('java.net.ConnectException', Failure.network),
+///     ('javax.net.ssl.', Failure.network),
+///     ('java.security.KeyStoreException', Failure.certificate),
+///   ],
+///   wrappers: {Failure.library},
+/// );
+///
+/// switch (classifier.classify(exception)) { … }
+/// ```
+///
+/// A rule matches a class whose name equals its prefix or starts with it, so
+/// `'javax.net.ssl.'` covers a package. Rules are tried in order, so put the
+/// more specific ones first. Only the generic kind is a wrapper: were the
+/// specific `rejected` one too, any network exception in its cause chain
+/// would turn a rejection into something to retry. And name classes rather
+/// than whole packages where a package mixes meanings — `java.net.` also holds
+/// `URISyntaxException`, which no retry fixes.
+class JavaExceptionClassifier<K extends Object> {
+  const JavaExceptionClassifier(this.rules, {this.wrappers = const {}});
+
+  /// `(class name or prefix, kind)`, tried in order.
+  final List<(String, K)> rules;
+
+  /// The kinds a more specific kind further down the cause chain overrides.
+  final Set<K> wrappers;
+
+  /// The kind of the class named [className] alone, or `null`.
+  K? kindOf(String className) {
+    for (final (prefix, kind) in rules) {
+      if (className.startsWith(prefix)) return kind;
+    }
+    return null;
+  }
+
+  /// The kind of [exception], looking through its cause chain; `null` when no
+  /// rule matches anything in it.
+  K? classify(JavaException exception) => classifyNames([
+    exception.className,
+    for (final cause in exception.causes) cause.className,
+  ]);
+
+  /// [classify] over class names, outermost first — for a chain that did not
+  /// come from a [JavaException].
+  K? classifyNames(Iterable<String> chain) {
+    K? wrapper;
+    for (final name in chain) {
+      final kind = kindOf(name);
+      if (kind == null) continue;
+      if (!wrappers.contains(kind)) return kind;
+      wrapper ??= kind;
+    }
+    return wrapper;
   }
 }

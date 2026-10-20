@@ -1,5 +1,90 @@
 # Changelog
 
+## 1.5.0
+
+Slow Java calls off the isolate, Java helpers without a jar, and the helpers
+every embedder ends up writing.
+
+### Running Java on JVM threads
+
+- **`JavaExecutor`.** `JavaExecutor.start(jvm, threads: 4)` and
+  `await executor.run(method, args, convert: …)`: the call runs on a pool of JVM
+  threads while the isolate keeps serving its event loop. A direct JNI call
+  blocks the isolate for as long as it takes. A Java exception fails the future
+  with the same `JavaException` a direct call would have thrown. A `monitor` is
+  held on the JVM thread for the whole call, which is how calls that share a
+  library's global state are serialized while the others run in parallel. The
+  threads are daemons whose context class loader is the system loader.
+  `shutdown` completes the calls that finished, fails those still running past
+  its timeout, and releases the proxy machinery if it was its last user.
+- **`jvm.reflectMethod(className, 'Ret name(T1, T2)')`.** Returns a
+  `java.lang.reflect.Method` by Java declaration: name, parameter types,
+  return type and `static` all have to match. It looks through the
+  superclasses and the interfaces too (default methods), and caches the result
+  for the isolate. `releaseReflectedMethods` releases the cache, and the
+  embedded class behind it when no executor is running. The method is made
+  accessible **from Java**: since JDK 17, `setAccessible(true)` called through
+  JNI from a thread with no Java frame only works for public members of public
+  classes, so a package-private class on the class path could not be called
+  reflectively from Dart at all.
+- **`JavaArray.objectsFrom`** builds the `Object[]` reflection takes. It boxes
+  values, and turns typed lists into primitive arrays and a `JavaClass` into its
+  `Class` object. Given the `parameterTypes`, it boxes each number as its
+  parameter wants, since `Method.invoke` never narrows (an `Integer` for a
+  `short` fails); `JavaExecutor.run` passes them. **`JavaObject.asArray`**
+  re-types an array that came back
+  declared as `Object`, after checking that it is one.
+- **`JvmProxies.releaseProxyRuntimeIfIdle`.** For a library that uses a proxy
+  internally: an open proxy runtime keeps the isolate alive.
+
+### Java helpers without a jar
+
+- **`dart run java_interop:embed_java`** compiles Java sources into a Dart file
+  that maps class names to class files (nested and anonymous classes
+  included). By default it uses `--release 11` and `-Xlint:all`; `--werror` is
+  opt-in.
+- **`jvm.newClassLoader()`, `jvm.defineClass`, `jvm.defineClasses`** load those
+  classes at runtime, each set in a loader of its own. `defineClasses` takes
+  them in any order, deferring a class whose supertype is not defined yet. The
+  proxy machinery now uses them instead of private copies.
+- **`findJavaHome`, `findJdkTool('javac')`, `javaHomeOf`.** These run the same
+  search as `searchLibjvm`, so a build tool and the binding agree on which JDK
+  is in use.
+
+### Embedding helpers
+
+- **`JvmOptions`.** The `vmOptions` an embedded JVM wants, as a value: headless
+  by default, UTF-8, time zone, heap, `-XX:-UsePerfData`, logging file, system
+  properties.
+- **`jvm.configureJavaLogging(levels: …)`, `javaLogLevel`,
+  `javaLoggingProperty`.** These configure `java.util.logging` through the
+  `LogManager`, since `Logger.getLogger` is caller-sensitive over JNI. Until
+  now this was a recipe in the README.
+- **`JavaExceptionClassifier<K>`.** Sorts exceptions into your own kinds by
+  class-name prefix, following the cause chain. A generic "wrapper" kind yields
+  to a more specific cause. **`mapJavaExceptions` / `mapJavaExceptionsAsync`**
+  translate exceptions at one place and keep the stack trace.
+  **`JavaException.isFatal`** (an `OutOfMemoryError`, `StackOverflowError`,
+  `InternalError` or `UnsatisfiedLinkError` anywhere in the chain) and
+  **`missingClass`** are new. `missingClass` ignores "Could not initialize
+  class", whose class is present but whose static initializer failed. The
+  `configureJavaLogging` text is escaped as `.properties`, so backslashes and
+  non-ASCII values survive.
+- **`jvm.preflight(classes:, resources:)`.** Reports every missing class and
+  resource at once, and says when the likely cause is a JVM this process
+  attached to but did not create. **`jvm.info()`** reports the version, vendor,
+  home and class path.
+- **`jvm.availableFontFamilies()`.** On macOS it refuses, with an explanation,
+  rather than hang on a JVM that is not headless.
+- **`jvm.enumFor(className, constant)`.** Caches one reference per enum
+  constant; `enumConstant` makes a new global reference on every call.
+- **`DateTime` ↔ `java.time`.** `toJavaLocalDate`, `toJavaLocalDateTime`,
+  `toJavaInstant`, `fromJavaTime` (`LocalDate`, `LocalDateTime`, `Instant`,
+  `ZonedDateTime`, `OffsetDateTime`), `javaToday` and `javaNow`. Wall-clock
+  types map to a local `DateTime` with the same fields; instants map to UTC.
+  `wallClockAsUtc: true` returns wall-clock values as UTC fields instead, for
+  a time the host's zone skips at a daylight-saving change.
+
 ## 1.4.1
 
 A thread this binding attaches now gets a context class loader.

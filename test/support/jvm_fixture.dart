@@ -80,6 +80,9 @@ T autoReleaseObject<T extends JavaObject>(T object) {
   return object;
 }
 
+/// The package root, for running the suite's helper programs from it.
+String get packageRoot => _packageRoot();
+
 /// The package root, found by walking up from this file to the `pubspec.yaml`.
 String _packageRoot() {
   var directory = Directory.current;

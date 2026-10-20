@@ -1,0 +1,204 @@
+/// Compiles Java sources and writes their class files into a Dart file, for
+/// [JvmClassLoading.defineClasses] to load at runtime.
+///
+/// ```sh
+/// dart run java_interop:embed_java \
+///   --out lib/src/my_helper_class.g.dart --name myHelperClasses \
+///   java/com/example/MyHelper.java
+/// ```
+///
+/// The output declares `final Map<String, Uint8List> <name>`: every class
+/// `javac` produced — nested and anonymous ones included — by binary name, in
+/// a stable order (`defineClasses` takes them in any order). Commit it, and
+/// run the tool again after editing the Java.
+///
+/// A JDK is needed here and nowhere else: the package that embeds the classes
+/// ships no jar and asks its users for no build step.
+///
+/// Options:
+///
+/// ```text
+///   --out <file>          the Dart file to write (required)
+///   --name <identifier>   the map's name (required)
+///   --release <n>         `javac --release`; default 11, the class file
+///                         version every supported JVM can load
+///   --classpath <path>    for sources that use types beyond the JDK's
+///   --werror              fail on any javac warning (`-Xlint:all` is always
+///                         on; newer JDKs add lints, so this is opt-in)
+/// ```
+library;
+
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:java_interop/java_interop.dart';
+
+void main(List<String> args) {
+  String? out;
+  String? name;
+  var release = '11';
+  String? classPath;
+  var werror = false;
+  final sources = <String>[];
+
+  for (var i = 0; i < args.length; i++) {
+    String value() {
+      if (i + 1 >= args.length) _fail('${args[i]} needs a value');
+      return args[++i];
+    }
+
+    switch (args[i]) {
+      case '--out':
+        out = value();
+      case '--name':
+        name = value();
+      case '--release':
+        release = value();
+      case '--classpath':
+        classPath = value();
+      case '--werror':
+        werror = true;
+      case '-h' || '--help':
+        stdout.writeln(_usage);
+        return;
+      default:
+        if (args[i].startsWith('-')) _fail('unknown option ${args[i]}');
+        sources.add(args[i]);
+    }
+  }
+
+  if (out == null || name == null || sources.isEmpty) _fail(_usage);
+  if (!RegExp(r'^[a-zA-Z_$][\w$]*$').hasMatch(name)) {
+    _fail('--name must be a Dart identifier: $name');
+  }
+  for (final source in sources) {
+    if (!File(source).existsSync()) _fail('missing $source');
+  }
+
+  final javac = findJdkTool('javac');
+  if (javac == null) {
+    _fail(
+      'No JDK found (a JRE has no javac). Set JAVA_HOME to a JDK, e.g.\n'
+      r'  export JAVA_HOME="$(brew --prefix openjdk@21)'
+      '/libexec/openjdk.jdk/Contents/Home"',
+    );
+  }
+  stdout.writeln('javac: $javac');
+
+  final work = Directory.systemTemp.createTempSync('java_interop_embed_');
+  try {
+    // --release pins the class file version. DefineClass rejects a class file
+    // newer than the running VM with UnsupportedClassVersionError, and only at
+    // runtime.
+    final compile = Process.runSync(javac, [
+      '--release',
+      release,
+      '-Xlint:all',
+      if (werror) '-Werror',
+      if (classPath != null) ...['-classpath', classPath],
+      '-d',
+      work.path,
+      ...sources,
+    ]);
+    if (compile.exitCode != 0) {
+      stderr.write(compile.stdout);
+      stderr.write(compile.stderr);
+      _fail('javac failed');
+    }
+    // Warnings, when javac succeeded anyway.
+    stderr.write(compile.stderr);
+
+    final classes = <String, List<int>>{};
+    for (final entity in work.listSync(recursive: true)) {
+      if (entity is! File || !entity.path.endsWith('.class')) continue;
+      final relative = entity.path
+          .substring(work.path.length + 1)
+          .replaceAll(Platform.pathSeparator, '.');
+      classes[relative.substring(0, relative.length - '.class'.length)] = entity
+          .readAsBytesSync();
+    }
+    if (classes.isEmpty) _fail('javac produced no class files');
+
+    // A stable order, outer classes first (`Foo` before `Foo$1`) for reading;
+    // `defineClasses` itself takes them in any order.
+    final names = classes.keys.toList()..sort(_outerFirst);
+
+    final version = Process.runSync(javac, ['-version']);
+    final compiler = ('${version.stdout}${version.stderr}').trim();
+    final first = classes[names.first]!;
+    final major = (first[6] << 8) | first[7];
+
+    final entries = StringBuffer();
+    for (final className in names) {
+      final encoded = base64.encode(classes[className]!);
+      // Raw: a nested class's binary name has a `$` in it.
+      entries.writeln("  r'$className':");
+      for (var i = 0; i < encoded.length; i += 68) {
+        final end = i + 68 < encoded.length ? i + 68 : encoded.length;
+        final last = end == encoded.length;
+        entries.writeln(
+          "      '${encoded.substring(i, end)}'${last ? ',' : ''}",
+        );
+      }
+    }
+
+    final output = File(out);
+    output.parent.createSync(recursive: true);
+    output.writeAsStringSync('''
+// GENERATED by `dart run java_interop:embed_java` — do not edit.
+//
+// The compiled class files of:
+${sources.map((s) => '//   ${s.replaceAll(Platform.pathSeparator, '/')}').join('\n')}
+// Read the Java for what the classes do; this file is only how they travel.
+//
+// class file version: $major (Java ${major - 44} bytecode)
+// compiled by: $compiler
+library;
+
+import 'dart:convert';
+import 'dart:typed_data';
+
+/// The classes, by binary name, for `jvm.defineClasses`.
+final Map<String, Uint8List> $name = {
+  for (final e in _${name}Base64.entries) e.key: base64.decode(e.value),
+};
+
+const _${name}Base64 = <String, String>{
+$entries};
+''');
+
+    // The Dart running this tool, not whichever one is first on the PATH.
+    final format = Process.runSync(Platform.resolvedExecutable, [
+      'format',
+      output.path,
+    ]);
+    if (format.exitCode != 0) {
+      stderr.write(format.stderr);
+      _fail('dart format failed');
+    }
+
+    stdout.writeln(
+      'wrote ${output.path}: ${names.join(', ')} (class version $major)',
+    );
+  } finally {
+    work.deleteSync(recursive: true);
+  }
+}
+
+int _outerFirst(String a, String b) {
+  final outerA = a.split(r'$').first;
+  final outerB = b.split(r'$').first;
+  final byOuter = outerA.compareTo(outerB);
+  if (byOuter != 0) return byOuter;
+  final byDepth = a.length.compareTo(b.length);
+  return byDepth != 0 ? byDepth : a.compareTo(b);
+}
+
+const _usage =
+    'usage: dart run java_interop:embed_java --out <file.g.dart> '
+    '--name <identifier> [--release 11] [--classpath <path>] <Source.java>...';
+
+Never _fail(String message) {
+  stderr.writeln(message);
+  exit(1);
+}

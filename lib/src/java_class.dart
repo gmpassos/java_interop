@@ -475,6 +475,36 @@ class JavaObject {
     return this;
   }
 
+  /// This object as a [JavaArray] of [elementDescriptor] elements, sharing the
+  /// reference — for an array that came back declared as `Object`, such as the
+  /// result of a reflective call or a generic method:
+  ///
+  /// ```dart
+  /// final pdf = result.asArray(JniType.byte).toBytes();
+  /// ```
+  ///
+  /// Checks that the object is such an array, and throws a [JniError] if not;
+  /// a wrong guess would otherwise reach JNI's array functions, where it is
+  /// undefined behaviour. Release either this object or the array, not both.
+  JavaArray asArray(String elementDescriptor) {
+    _checkNotNull('asArray');
+    final arrayClass = jvm.findClass(JniType.arrayOf(elementDescriptor));
+    try {
+      if (!jvm.isInstanceOf(ref, arrayClass)) {
+        final actual = jvm.getObjectClass(ref);
+        final name = _nameOfClass(jvm, actual);
+        actual.release();
+        throw JniError('$name is not an array of "$elementDescriptor"');
+      }
+    } finally {
+      arrayClass.release();
+    }
+    return this is JavaArray &&
+            (this as JavaArray).elementDescriptor == elementDescriptor
+        ? this as JavaArray
+        : JavaArray(jvm, ref, elementDescriptor);
+  }
+
   /// The Java `toString()` of this object.
   String? javaToString() => call('toString', '()Ljava/lang/String;') as String?;
 
