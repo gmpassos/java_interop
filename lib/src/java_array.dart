@@ -98,6 +98,30 @@ class JavaArray extends JavaObject {
   factory JavaArray.ofStrings(Jvm jvm, List<String?> values) =>
       JavaArray.of(jvm, JniType.string, values);
 
+  /// An `Object[]` of [values], each boxed or converted as reflection expects
+  /// its arguments — the array `Method.invoke` takes.
+  ///
+  /// A `bool`, `int` or `double` becomes its wrapper (an `int` an `Integer`
+  /// when it fits in 32 bits, a `Long` otherwise), a `String` a
+  /// `java.lang.String`, a [JavaClass] its `java.lang.Class` object, and a
+  /// [JavaObject] or [JavaRef] is stored as is. A `Uint8List` becomes a
+  /// `byte[]`, and the other typed lists the matching primitive array
+  /// (`Int32List` an `int[]`, `Int64List` a `long[]`, `Float64List` a
+  /// `double[]`, …). Any other `List` is ambiguous — `Object[]`? `String[]`?
+  /// — and throws: build it as a [JavaArray] first.
+  factory JavaArray.objectsFrom(Jvm jvm, List<Object?> values) {
+    final temporaries = <JavaArray>[];
+    try {
+      return JavaArray.of(jvm, JniType.object, [
+        for (final value in values) _objectElement(jvm, value, temporaries),
+      ]);
+    } finally {
+      for (final temporary in temporaries) {
+        temporary.release();
+      }
+    }
+  }
+
   /// An array of [className] elements, e.g. `java.lang.Object`.
   factory JavaArray.ofObjects(
     Jvm jvm,
@@ -196,6 +220,34 @@ class JavaArray extends JavaObject {
 
 /// Reduces a [JavaObject] or [JavaClass] to the reference underneath, so the
 /// raw array layer never has to know about the ergonomic types.
+/// [value] as an element of an `Object[]`, for [JavaArray.objectsFrom]. A
+/// primitive array made here goes into [temporaries], for the caller to release
+/// once the `Object[]` holds its own reference.
+Object? _objectElement(Jvm jvm, Object? value, List<JavaArray> temporaries) {
+  final String? descriptor = switch (value) {
+    Uint8List() || Int8List() => JniType.byte,
+    Int16List() => JniType.short,
+    Uint16List() => JniType.char,
+    Int32List() => JniType.int_,
+    Int64List() => JniType.long,
+    Float32List() => JniType.float,
+    Float64List() => JniType.double_,
+    _ => null,
+  };
+  if (descriptor != null) {
+    final array = JavaArray.of(jvm, descriptor, value as List<Object?>);
+    temporaries.add(array);
+    return array.ref;
+  }
+  if (value is List) {
+    throw JniError(
+      'cannot put a ${value.runtimeType} in an Object[]: the element type is '
+      'ambiguous; build it with JavaArray.ofStrings/ofObjects/… first',
+    );
+  }
+  return _unwrap(value);
+}
+
 Object? _unwrap(Object? value) {
   if (value is JavaObject) return value.ref;
   if (value is JavaClass) return value.ref;

@@ -57,6 +57,7 @@ import 'java_ref.dart';
 import 'jni_slots.dart';
 import 'jvm.dart';
 import 'jvm_arrays.dart';
+import 'jvm_class_loading.dart';
 import 'jvm_diagnostics.dart';
 import 'jvm_strings.dart';
 import 'native_types.dart';
@@ -370,6 +371,22 @@ extension JvmProxies on Jvm {
   /// long-lived process that is done with proxies can reclaim it, and the tests
   /// need it to prove the teardown order is safe.
   void releaseProxyRuntime() => _runtimes[this]?._dispose();
+
+  /// [releaseProxyRuntime], but only when no proxy is live — returning whether
+  /// it did.
+  ///
+  /// For a library that uses a proxy internally and releases it when done: the
+  /// proxy machinery holds `NativeCallable`s, which keep the isolate alive while
+  /// they are open, so a library that released only its proxy would still keep
+  /// its caller's program from exiting. Calling this after releasing the proxy
+  /// tears the machinery down if nobody else is using it, and leaves it alone
+  /// if anyone is.
+  bool releaseProxyRuntimeIfIdle() {
+    final runtime = _runtimes[this];
+    if (runtime == null || runtime.proxies.isNotEmpty) return false;
+    runtime._dispose();
+    return true;
+  }
 }
 
 /// Per-isolate, per-[Jvm] proxy machinery.
@@ -395,7 +412,7 @@ class _ProxyRuntime {
 
   /// The class loader the handler class was defined in, held so it is not
   /// collected — a class lives only as long as its defining loader.
-  final JavaRef loader;
+  final JavaObject loader;
 
   /// `dart.jni.DartInvocationHandler`, as defined by *this* isolate.
   final JavaClass handlerClass;
@@ -454,8 +471,14 @@ class _ProxyRuntime {
   /// callable cannot redirect isolate A's calls into it, which would abort the
   /// process the first time A's proxy was used.
   factory _ProxyRuntime._create(Jvm jvm) {
-    final loader = _newClassLoader(jvm);
-    final handlerClass = _defineHandlerClass(jvm, loader);
+    final loader = jvm.newClassLoader();
+    final JavaClass handlerClass;
+    try {
+      handlerClass = _defineHandlerClass(jvm, loader);
+    } catch (_) {
+      loader.release();
+      rethrow;
+    }
 
     late final _ProxyRuntime runtime;
 
@@ -738,62 +761,9 @@ class _ProxyRuntime {
   }
 }
 
-/// A fresh `URLClassLoader` with no URLs, to define the handler class in.
-///
-/// Its parent is the system loader, so the handler can still see application
-/// interfaces; it loads nothing itself, and exists only to give this isolate's
-/// copy of the class a distinct identity.
-JavaRef _newClassLoader(Jvm jvm) {
-  final loaderClass = JavaClass.forName(jvm, 'java.net.URLClassLoader');
-  try {
-    final urls = JavaArray.sized(jvm, 'Ljava/net/URL;', 0);
-    try {
-      final loader = loaderClass.newJava('(java.net.URL[])', [urls]);
-      final global = loader.ref.toGlobal();
-      loader.release();
-      return global;
-    } finally {
-      urls.release();
-    }
-  } finally {
-    loaderClass.release();
-  }
-}
-
 /// Defines `dart.jni.DartInvocationHandler` from [proxyClassBytes].
-JavaClass _defineHandlerClass(Jvm jvm, JavaRef loader) {
-  final env = jvm.env;
-  final defineClass = Jvm.fnSlotOf(
-    env,
-    JniFn.defineClass,
-  ).cast<NativeFunction<DefineClassC>>().asFunction<DefineClassDart>();
-
-  final bytes = proxyClassBytes;
-  final clazz = using((arena) {
-    final buffer = arena<Uint8>(bytes.length);
-    buffer.asTypedList(bytes.length).setAll(0, bytes);
-    return defineClass(
-      env,
-      proxyClassName.toNativeUtf8(allocator: arena),
-      loader.pointer,
-      buffer,
-      bytes.length,
-    );
-  });
-
-  if (clazz == nullptr) {
-    jvm.checkException();
-    throw JniError(
-      'DefineClass($proxyClassName) failed. The class file is version '
-      '55 (Java 11); a JVM older than that cannot load it.',
-    );
-  }
-
-  final local = JavaRef(jvm, clazz, JavaRefKind.local);
-  final global = local.toGlobal();
-  local.release();
-  return JavaClass(jvm, global, 'dart.jni.DartInvocationHandler');
-}
+JavaClass _defineHandlerClass(Jvm jvm, JavaObject loader) =>
+    jvm.defineClass(loader, proxyClassName, proxyClassBytes);
 
 /// Binds `invokeSync` and `invokeAsync` to this isolate's callables.
 void _bindNatives(

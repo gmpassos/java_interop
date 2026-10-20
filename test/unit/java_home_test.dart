@@ -7,6 +7,33 @@ import 'package:java_interop/java_interop.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('findJavaHome', () {
+    test('javaHomeOf inverts libjvmUnder', () {
+      final home = Platform.isWindows ? r'C:\jdk-21' : '/opt/jdk-21';
+      expect(javaHomeOf(libjvmUnder(home)), home);
+    });
+
+    test('agrees with searchLibjvm', () {
+      final search = searchLibjvm();
+      if (!search.found) {
+        expect(findJavaHome(), isNull);
+        return;
+      }
+      expect(libjvmUnder(findJavaHome()!), search.resolved);
+    });
+
+    test('findJdkTool finds javac in that home, or nothing', () {
+      final home = findJavaHome();
+      final javac = findJdkTool('javac');
+      if (home == null) {
+        expect(javac, isNull);
+        return;
+      }
+      expect(javac, startsWith(home));
+      expect(findJdkTool('no-such-tool'), isNull);
+    });
+  });
+
   group('libjvmUnder', () {
     test('picks the platform-specific layout', () {
       final path = libjvmUnder('/opt/jdk');

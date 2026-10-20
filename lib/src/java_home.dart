@@ -105,6 +105,37 @@ String defaultLibjvmPath({Map<String, String>? environment}) {
   );
 }
 
+/// The JDK home of the `libjvm` that [searchLibjvm] finds, or `null`.
+///
+/// The same search, in the same order, so every tool — the binding, a build
+/// script, a code generator — agrees on which JDK is in use.
+String? findJavaHome({Map<String, String>? environment}) {
+  final libjvm = searchLibjvm(environment: environment).resolved;
+  return libjvm == null ? null : javaHomeOf(libjvm);
+}
+
+/// The JDK home that [libjvm] lives under — the inverse of [libjvmUnder].
+String javaHomeOf(String libjvm) {
+  final separator = Platform.isWindows ? r'\' : '/';
+  final parts = libjvm.split(separator);
+  // <home>/lib/server/libjvm.{so,dylib}, or <home>\bin\server\jvm.dll.
+  return parts.sublist(0, parts.length - 3).join(separator);
+}
+
+/// A tool from the JDK found by [findJavaHome] — `javac`, `jar`, `keytool` —,
+/// or `null` when there is no JDK or the tool is not in it.
+///
+/// A JRE has `java` but no `javac`: asking for the compiler is how a build
+/// script tells the two apart.
+String? findJdkTool(String name, {Map<String, String>? environment}) {
+  final home = findJavaHome(environment: environment);
+  if (home == null) return null;
+  final separator = Platform.isWindows ? r'\' : '/';
+  final executable = Platform.isWindows ? '$name.exe' : name;
+  final tool = '$home${separator}bin$separator$executable';
+  return File(tool).existsSync() ? tool : null;
+}
+
 String? _runOrNull(String executable, List<String> arguments) {
   try {
     final result = Process.runSync(executable, arguments);
